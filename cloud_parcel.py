@@ -65,18 +65,32 @@ class CloudParcel(object):
             return w
         
         def qf(w, wv, wl, T, z):
-            return flux(w, wl, T, z)
+            return flux(wv, wl, T, z)
         
         def lf(w, wv, wl, T, z):
-            return -flux(w, wl, T, z)
+            return -flux(wv, wl, T, z)
         
         for i in range(1, NT):
             # K1
-            k1w = dt * wf(T[i-1], z[i-1], l[i-1])
-            k1T = dt * Tf(w[i-1], q[i-1], l[i-1], T[i-1], z[i-1])
+            k1w = dt * wf(T[i-1], 
+                          z[i-1], 
+                          l[i-1])
+            k1T = dt * Tf(w[i-1], 
+                          q[i-1], 
+                          l[i-1], 
+                          T[i-1], 
+                          z[i-1])
             k1z = dt * zf(w[i-1])
-            k1q = dt * qf(w[i-1], q[i-1], l[i-1], T[i-1], z[i-1])
-            k1l = dt * lf(w[i-1], q[i-1], l[i-1], T[i-1], z[i-1])
+            k1q = dt * qf(w[i-1], 
+                          q[i-1], 
+                          l[i-1], 
+                          T[i-1], 
+                          z[i-1])
+            k1l = dt * lf(w[i-1], 
+                          q[i-1], 
+                          l[i-1], 
+                          T[i-1], 
+                          z[i-1])
             # K2
             k2w = dt * wf(T[i-1] + k1T / 2,
                           z[i-1] + k1z / 2,
@@ -144,14 +158,14 @@ class CloudParcel(object):
             q[i] = q[i-1] + 1. / 6. * (k1q + 2.0 * (k2q + k3q) + k4q)
             l[i] = l[i-1] + 1. / 6. * (k1l + 2.0 * (k2l + k3l) + k4l)
             
-        self.storage = (T, w, z)
-        return T, w, z
+        self.storage = (T, w, z, q, l)
+        return T, w, z, q, l
             
 if __name__ == "__main__":
     snd = snd.Sounding(None, None)
-    snd.from_lapse_rate(trial_lapse_rate, 0, 2e3, 2000)
+    snd.from_lapse_rate(trial_lapse_rate, 0, 5e3, 2000)
     
-    parcel = CloudParcel(T0 = 301.)
-    T, w, z = parcel.run(1.0, 6000, snd)
-    plt.plot(T)
+    parcel = CloudParcel(T0 = 301., q0=0.015)
+    T, w, z, q, l = parcel.run(1.0, 6000, snd)
+    plt.plot(z)
     plt.show()
