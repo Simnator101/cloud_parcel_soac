@@ -38,27 +38,44 @@ class CloudParcel(object):
         assert(environ is not None)
         assert(NT > 0)
         assert(dt > 0.0)
+        print(self.__t0, self.__w0, self.__z0)
+        
         T = np.full(NT, self.__t0)
         w = np.full(NT, self.__w0)
         z = np.full(NT, self.__z0)
         acc = gval / (1 + self.induced_mass)
         
+        def wf(T, z):
+            return acc * (T - environ.sample(z)) / environ.sample(z)
+        
+        def Tf(w):
+            return -gval / cpa * w
+        
+        def zf(w):
+            return w
+        
         for i in range(1, NT):
-            # Predictor
-            Te = environ.sample(z[i-1])
-            Buoy = acc * (T[i-1] - Te) / Te
-            wstar = w[i-1] + dt * Buoy
-            Tstar = T[i-1] + dt * (-gval / cpa * w[i-1])
-            #zstar = z[i-1] + dt * w[i-1] + 0.5 * Buoy * dt * dt
-            zstar = z[i-1] + dt * w[i-1]
+            # K1
+            k1w = dt * wf(T[i-1], z[i-1])
+            k1T = dt * Tf(w[i-1])
+            k1z = dt * zf(w[i-1])
+            # K2
+            k2w = dt * wf(T[i-1] + k1T / 2, z[i-1] + k1z / 2)
+            k2T = dt * Tf(w[i-1] + k1w / 2)
+            k2z = dt * zf(w[i-1] + k1w / 2)
+            # K3
+            k3w = dt * wf(T[i-1] + k2T / 2, z[i-1] + k2z / 2)
+            k3T = dt * Tf(w[i-1] + k2w / 2)
+            k3z = dt * zf(w[i-1] + k2w / 2)
+            # K4
+            k4w = dt * wf(T[i-1] + k3T, z[i-1] + k3z)
+            k4T = dt * Tf(w[i-1] + k3w)
+            k4z = dt * zf(w[i-1] + k3w)
+            # Update
+            w[i] = w[i-1] + 1. / 6. * (k1w + 2.0 * (k2w + k3w) + k4w)
+            T[i] = T[i-1] + 1. / 6. * (k1T + 2.0 * (k2T + k3T) + k4T)
+            z[i] = z[i-1] + 1. / 6. * (k1z + 2.0 * (k2z + k3z) + k4z)
             
-            # Corrector
-            Te = environ.sample(zstar)
-            Buoy = acc * (Tstar - Te) / Te
-            w[i] = w[i-1] + dt * Buoy
-            T[i] = T[i-1] + dt * (-gval / cpa * wstar)
-            #z[i] = z[i-1] + dt * wstar + 0.5 * Buoy * dt * dt
-            z[i] = z[i-1] + dt * wstar
         self.storage = (T, w, z)
         return T, w, z
             
@@ -68,5 +85,5 @@ if __name__ == "__main__":
     
     parcel = CloudParcel(T0 = 301.)
     T, w, z = parcel.run(1.0, 10000, snd)
-    plt.plot(w)
+    plt.plot(z)
     plt.show()
