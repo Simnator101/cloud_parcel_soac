@@ -6,6 +6,7 @@ Created on Tue Oct  1 09:40:54 2019
 Cloud parcel module class
 """
 
+import matplotlib.pyplot as plt
 import numpy as np
 import sounding as snd
 
@@ -55,7 +56,7 @@ class CloudParcel(object):
             return acc * ((T - environ.sample(z)) / environ.sample(z) - l)
         
         def flux(wv, wl, T, z):
-            wmax = saturation_pressure(T) / np.interp(z, environ.height, p) * Rair / Rv
+            wmax = snd.saturation_pressure(T) / np.interp(z, environ.height, p) * Rair / Rv
             return min(wmax - wv, wl)
         
         def Tf(w, wv, wl, T, z):
@@ -162,10 +163,10 @@ class CloudParcel(object):
         return T, w, z, q, l
             
 if __name__ == "__main__":
-    snd = snd.Sounding(None, None)
-    snd.from_lapse_rate(trial_lapse_rate, 0, 5e3, 2000)
+    sounding = snd.Sounding(None, None)
+    sounding.from_lapse_rate(trial_lapse_rate, 0, 5e3, 2000)
     
-    parcel = CloudParcel(T0 = 301., q0=0.015)
-    T, w, z, q, l = parcel.run(1.0, 6000, snd)
+    parcel = CloudParcel(T0 = 301., q0=0.005)
+    T, w, z, q, l = parcel.run(1.0, 6000, sounding)
     plt.plot(z)
     plt.show()
