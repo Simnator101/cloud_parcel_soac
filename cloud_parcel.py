@@ -8,6 +8,7 @@ Cloud parcel module class
 
 import numpy as np
 import sounding as snd
+import matplotlib.pyplot as plt
 
 # Constants
 gval = 9.81 # m / s^2
@@ -19,20 +20,21 @@ cpv = 716.0     # J / kg / K
 Lv = 2.5e6      # J / kg
 
 def trial_lapse_rate(z):
-    if 0.0 <= z < 100.0:
-        return -20.0e-3
-    elif 100.0 <= z < 800.0:
-        return -9.8e-3
+    if 0.0 <= z < 1500.0:
+        return -10.0e-3
+    elif 1500.0 <= z < 10000.0:
+        return -6.5e-3
     else:
-        return 20e-3
+        return 5e-3
 
 
 class CloudParcel(object):
-    def __init__(self, T0=300.0, z0=0.0, w0=0.0, q0=0.0):
+    def __init__(self, T0=300.0, z0=0.0, w0=0.0, q0=0.0, Kmix=1.):
         self.__t0 = T0
         self.__w0 = w0
         self.__z0 = z0
         self.__q0 = q0
+        self.__Kmix = Kmix
         self.induced_mass = 0.5
         self.storage = None
         
@@ -55,8 +57,15 @@ class CloudParcel(object):
             return acc * ((T - environ.sample(z)) / environ.sample(z) - l)
         
         def flux(wv, wl, T, z):
-            wmax = saturation_pressure(T) / np.interp(z, environ.height, p) * Rair / Rv
-            return min(wmax - wv, wl)
+            wmax = snd.saturation_pressure(T) / np.interp(z, environ.height, p) * Rair / Rv
+            #return min(wmax - wv, wl)
+            if wv/wmax > 1.01:
+                fl = wmax - wv
+            elif wv/wmax < 0.99:
+                fl = min(wmax - wv, wl)
+            else:
+                fl = 0
+            return fl*(1-np.exp(-dt/self.__Kmix))
         
         def Tf(w, wv, wl, T, z):
             return -gval / cpa * w - Lv / cpa * flux(wv, wl, T, z)
@@ -162,10 +171,27 @@ class CloudParcel(object):
         return T, w, z, q, l
             
 if __name__ == "__main__":
-    snd = snd.Sounding(None, None)
-    snd.from_lapse_rate(trial_lapse_rate, 0, 5e3, 2000)
+    sounding = snd.Sounding(None, None)
+    sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
     
-    parcel = CloudParcel(T0 = 301., q0=0.015)
-    T, w, z, q, l = parcel.run(1.0, 6000, snd)
+    parcel = CloudParcel(T0 = 301., q0=0.0)
+    
+    T, w, z, q, l = parcel.run(1.0, 6000, sounding)
+
+    #p = np.full(T.size, 1e5)
+    #for i in range(1, T.size):
+    #    p[i] = p[0] * np.exp(np.trapz(-gval / Rair / T[:i], z[:i]))
     plt.plot(z)
     plt.show()
+    #plt.plot(q+l)
+    #plt.ylim([0.,0.0201])
+    #plt.show()
+    #plt.plot(0.5*w**2+gval*z+cpa*T+q*cpv*T-(Rair+q*Rv)*T)
+    #plt.show()
+    #plt.plot(0.5*w**2+gval*z+cpa*T+q*cpv*T-(Rair+q*Rv)*T*(p-p[0])/p)
+    #plt.plot(0.5*w**2)
+    #plt.plot(gval*z)
+    #plt.plot(cpa*T)
+    #plt.plot(q*cpv*T)
+    #plt.plot(-(Rair+q*Rv)*T*(p-p[0])/p)
+    #plt.legend(['total','kin','pot','temp','water','druk'])
