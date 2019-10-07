@@ -6,6 +6,7 @@ Created on Tue Oct  1 09:40:54 2019
 Cloud parcel module class
 """
 
+import matplotlib.pyplot as plt
 import numpy as np
 import sounding as snd
 import matplotlib.pyplot as plt
@@ -66,6 +67,9 @@ class CloudParcel(object):
             else:
                 fl = 0
             return fl*(1-np.exp(-dt/self.__Kmix))
+=======
+            return min(wmax - wv, wl)
+>>>>>>> b3cfa883833e4c63d0e0a24be9cfb0e2ee4e5708
         
         def Tf(w, wv, wl, T, z):
             return -gval / cpa * w - Lv / cpa * flux(wv, wl, T, z)
