@@ -67,9 +67,6 @@ class CloudParcel(object):
             else:
                 fl = 0
             return fl*(1-np.exp(-dt/self.__Kmix))
-=======
-            return min(wmax - wv, wl)
->>>>>>> b3cfa883833e4c63d0e0a24be9cfb0e2ee4e5708
         
         def Tf(w, wv, wl, T, z):
             return -gval / cpa * w - Lv / cpa * flux(wv, wl, T, z)
@@ -178,7 +175,7 @@ if __name__ == "__main__":
     sounding = snd.Sounding(None, None)
     sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
     
-    parcel = CloudParcel(T0 = 301., q0=0.0)
+    parcel = CloudParcel(T0 = 301., q0=0.00)
     
     T, w, z, q, l = parcel.run(1.0, 6000, sounding)
 
