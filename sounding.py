@@ -537,6 +537,9 @@ class Sounding(object):
         #assert(self.__z.max() + 10.0 >= z and self.__z.min() - 10.0 <= z)
         return np.interp(z, self.__z, self.__T)
     
+    def sample_q(self, z):
+        return np.interp(z, self.__z, self.__q)
+    
             
     def add_points(self, z, T, q=1e-6):
         z = np.array(z, dtype=np.float)
@@ -585,6 +588,23 @@ class Sounding(object):
         RH = [relative_humidity(qv, pv, Tv) for qv, pv, Tv in loopd]
         return np.array(RH)
         
+    @property
+    def surface_humidity(self):
+        return self.__q[0]
+    
+    @property
+    def surface_temperature(self):
+        return self.__T[0]
+    
+    @property
+    def static_energy(self):
+        assert self.__T is not None
+        return cpa * self.__T + gval * self.__z + Lv * self.__q
+    
+    @property
+    def static_moist_energy(self):
+        assert self.__T is not None
+        return cpa * self.__T + gval * self.__z + Lv * self.__q
         
     def plot(self, show=True):
         difTm = np.abs(self.__T - self.__T[0]).max() + 10
@@ -648,11 +668,8 @@ class Sounding(object):
                 labelLine(ln, qcoord, label='%.1f' % (qs * 1e3), color='k')                
                 
         # Plot Data
-        ax.semilogy(self.__T, self.__p * 1e-2, color='C3', label='Temperature (K)')
-        ax.semilogy(self.__Td, self.__p * 1e-2, color='C2', label='Dew point temperature (K)')
-        
-        ax.yaxis.set_major_formatter(ScalarFormatter())
-        ax.yaxis.set_minor_formatter(NullFormatter())
+        ax.plot(self.__T, self.__p * 1e-2, color='C3', label='Temperature (K)')
+        ax.plot(self.__Td, self.__p * 1e-2, color='C2', label='Dew point temperature (K)')
         
         atxt = None
         if self.wyoming_info.valid:
@@ -667,6 +684,8 @@ class Sounding(object):
     
         
         # Labels
+        ax.yaxis.set_major_formatter(ScalarFormatter())
+        ax.yaxis.set_minor_formatter(NullFormatter())
         ax.set_yticks(pticks)
         ax.set_ylim(1050, 100.0)
     
