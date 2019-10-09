@@ -32,7 +32,7 @@ def trial_lapse_rate(z):
 
 
 class CloudParcel(object):
-    def __init__(self, T0=300.0, z0=0.0, w0=0.0, q0=0.0, mix_len=0.0):
+    def __init__(self, T0=300.0, z0=0.0, w0=0.0, q0=0.0, mix_len=0.0, method='RK4'):
         self.__t0 = T0
         self.__w0 = w0
         self.__z0 = z0
@@ -42,6 +42,7 @@ class CloudParcel(object):
         self.storage = None
         self.dt = None
         self.surf_p = 1e5
+        self.method = method
         
     @staticmethod
     def tanh_vapour_flow(wv, wl, wmax, dt):
@@ -81,9 +82,9 @@ class CloudParcel(object):
             wmax = snd.saturation_pressure(T) / np.interp(z, environ.height, p) * Rair / Rv
             if flux_func is None:
                 fl = 0.0
-                if wv/wmax > 1.05:
+                if wv/wmax > 1.01:
                     fl = wmax - wv
-                elif wv/wmax < 0.95:
+                elif wv/wmax < 0.99:
                     fl = min(wmax - wv, wl)
                 return fl#*(1-np.exp(-dt/self.__Kmix))
             
@@ -113,99 +114,122 @@ class CloudParcel(object):
                mu_eval = mu_eval(z)
             return -flux(wv, wl, T, z) - mu_eval * wl * abs(w)
         
-        
-        for i in range(1, NT):
-            # K1
-            k1w = dt * wf(T[i-1], 
-                          z[i-1], 
-                          l[i-1],
-                          w[i-1])
-            k1T = dt * Tf(w[i-1], 
-                          q[i-1], 
-                          l[i-1], 
-                          T[i-1], 
-                          z[i-1])
-            k1z = dt * zf(w[i-1])
-            k1q = dt * qf(w[i-1], 
-                          q[i-1], 
-                          l[i-1], 
-                          T[i-1], 
-                          z[i-1])
-            k1l = dt * lf(w[i-1], 
-                          q[i-1], 
-                          l[i-1], 
-                          T[i-1], 
-                          z[i-1])
-            # K2
-            k2w = dt * wf(T[i-1] + k1T / 2,
-                          z[i-1] + k1z / 2,
-                          l[i-1] + k1l / 2,
-                          w[i-1] + k1w / 2)
-            k2T = dt * Tf(w[i-1] + k1w / 2,
-                          q[i-1] + k1q / 2,
-                          l[i-1] + k1l / 2,
-                          T[i-1] + k1T / 2,
-                          z[i-1] + k1z / 2)
-            k2z = dt * zf(w[i-1] + k1w / 2)
-            k2q = dt * qf(w[i-1] + k1w / 2,
-                          q[i-1] + k1q / 2,
-                          l[i-1] + k1l / 2,
-                          T[i-1] + k1T / 2,
-                          z[i-1] + k1z / 2)
-            k2l = dt * lf(w[i-1] + k1w / 2,
-                          q[i-1] + k1q / 2,
-                          l[i-1] + k1l / 2,
-                          T[i-1] + k1T / 2,
-                          z[i-1] + k1z / 2)
-            # K3
-            k3w = dt * wf(T[i-1] + k2T / 2,
-                          z[i-1] + k2z / 2,
-                          l[i-1] + k2l / 2,
-                          w[i-1] + k2w / 2)
-            k3T = dt * Tf(w[i-1] + k2w / 2,
-                          q[i-1] + k2q / 2,
-                          l[i-1] + k2l / 2, 
-                          T[i-1] + k2T / 2,
-                          z[i-1] + k2z / 2)
-            k3z = dt * zf(w[i-1] + k2w / 2)
-            k3q = dt * qf(w[i-1] + k2w / 2,
-                          q[i-1] + k2q / 2,
-                          l[i-1] + k2l / 2, 
-                          T[i-1] + k2T / 2,
-                          z[i-1] + k2z / 2)
-            k3l = dt * lf(w[i-1] + k2w / 2,
-                          q[i-1] + k2q / 2,
-                          l[i-1] + k2l / 2, 
-                          T[i-1] + k2T / 2,
-                          z[i-1] + k2z / 2)
-            # K4
-            k4w = dt * wf(T[i-1] + k3T,
-                          z[i-1] + k3z,
-                          l[i-1] + k3l,
-                          w[i-1] + k3w)
-            k4T = dt * Tf(w[i-1] + k3w,
-                          q[i-1] + k3q,
-                          l[i-1] + k3l,
-                          T[i-1] + k3T,
-                          z[i-1] + k3z)
-            k4z = dt * zf(w[i-1] + k3w)
-            k4q = dt * qf(w[i-1] + k3w,
-                          q[i-1] + k3q,
-                          l[i-1] + k3l,
-                          T[i-1] + k3T,
-                          z[i-1] + k3z)
-            k4l = dt * lf(w[i-1] + k3w,
-                          q[i-1] + k3q,
-                          l[i-1] + k3l,
-                          T[i-1] + k3T,
-                          z[i-1] + k3z)
-            # Update
-            w[i] = w[i-1] + 1. / 6. * (k1w + 2.0 * (k2w + k3w) + k4w)
-            T[i] = T[i-1] + 1. / 6. * (k1T + 2.0 * (k2T + k3T) + k4T)
-            z[i] = z[i-1] + 1. / 6. * (k1z + 2.0 * (k2z + k3z) + k4z)
-            q[i] = q[i-1] + 1. / 6. * (k1q + 2.0 * (k2q + k3q) + k4q)
-            l[i] = l[i-1] + 1. / 6. * (k1l + 2.0 * (k2l + k3l) + k4l)
-            
+        if self.method == 'RK4':
+            for i in range(1, NT):
+                # K1
+                k1w = dt * wf(T[i-1], 
+                              z[i-1], 
+                              l[i-1],
+                              w[i-1])
+                k1T = dt * Tf(w[i-1], 
+                              q[i-1], 
+                              l[i-1], 
+                              T[i-1], 
+                              z[i-1])
+                k1z = dt * zf(w[i-1])
+                k1q = dt * qf(w[i-1], 
+                              q[i-1], 
+                              l[i-1], 
+                              T[i-1], 
+                              z[i-1])
+                k1l = dt * lf(w[i-1], 
+                              q[i-1], 
+                              l[i-1], 
+                              T[i-1], 
+                              z[i-1])
+                # K2
+                k2w = dt * wf(T[i-1] + k1T / 2,
+                              z[i-1] + k1z / 2,
+                              l[i-1] + k1l / 2,
+                              w[i-1] + k1w / 2)
+                k2T = dt * Tf(w[i-1] + k1w / 2,
+                              q[i-1] + k1q / 2,
+                              l[i-1] + k1l / 2,
+                              T[i-1] + k1T / 2,
+                              z[i-1] + k1z / 2)
+                k2z = dt * zf(w[i-1] + k1w / 2)
+                k2q = dt * qf(w[i-1] + k1w / 2,
+                              q[i-1] + k1q / 2,
+                              l[i-1] + k1l / 2,
+                              T[i-1] + k1T / 2,
+                              z[i-1] + k1z / 2)
+                k2l = dt * lf(w[i-1] + k1w / 2,
+                              q[i-1] + k1q / 2,
+                              l[i-1] + k1l / 2,
+                              T[i-1] + k1T / 2,
+                              z[i-1] + k1z / 2)
+                # K3
+                k3w = dt * wf(T[i-1] + k2T / 2,
+                              z[i-1] + k2z / 2,
+                              l[i-1] + k2l / 2,
+                              w[i-1] + k2w / 2)
+                k3T = dt * Tf(w[i-1] + k2w / 2,
+                              q[i-1] + k2q / 2,
+                              l[i-1] + k2l / 2, 
+                              T[i-1] + k2T / 2,
+                              z[i-1] + k2z / 2)
+                k3z = dt * zf(w[i-1] + k2w / 2)
+                k3q = dt * qf(w[i-1] + k2w / 2,
+                              q[i-1] + k2q / 2,
+                              l[i-1] + k2l / 2, 
+                              T[i-1] + k2T / 2,
+                              z[i-1] + k2z / 2)
+                k3l = dt * lf(w[i-1] + k2w / 2,
+                              q[i-1] + k2q / 2,
+                              l[i-1] + k2l / 2, 
+                              T[i-1] + k2T / 2,
+                              z[i-1] + k2z / 2)
+                # K4
+                k4w = dt * wf(T[i-1] + k3T,
+                              z[i-1] + k3z,
+                              l[i-1] + k3l,
+                              w[i-1] + k3w)
+                k4T = dt * Tf(w[i-1] + k3w,
+                              q[i-1] + k3q,
+                              l[i-1] + k3l,
+                              T[i-1] + k3T,
+                              z[i-1] + k3z)
+                k4z = dt * zf(w[i-1] + k3w)
+                k4q = dt * qf(w[i-1] + k3w,
+                              q[i-1] + k3q,
+                              l[i-1] + k3l,
+                              T[i-1] + k3T,
+                              z[i-1] + k3z)
+                k4l = dt * lf(w[i-1] + k3w,
+                              q[i-1] + k3q,
+                              l[i-1] + k3l,
+                              T[i-1] + k3T,
+                              z[i-1] + k3z)
+                # Update
+                w[i] = w[i-1] + 1. / 6. * (k1w + 2.0 * (k2w + k3w) + k4w)
+                T[i] = T[i-1] + 1. / 6. * (k1T + 2.0 * (k2T + k3T) + k4T)
+                z[i] = z[i-1] + 1. / 6. * (k1z + 2.0 * (k2z + k3z) + k4z)
+                q[i] = q[i-1] + 1. / 6. * (k1q + 2.0 * (k2q + k3q) + k4q)
+                l[i] = l[i-1] + 1. / 6. * (k1l + 2.0 * (k2l + k3l) + k4l)
+
+        elif self.method == 'Euler':
+            for i in range(1, NT):
+                w[i] = w[i-1] + dt* wf(T[i-1], z[i-1], l[i-1], w[i-1])
+                T[i] = T[i-1] + dt* Tf(w[i-1], q[i-1], l[i-1], T[i-1], z[i-1])
+                z[i] = z[i-1] + dt* zf(w[i-1])
+                q[i] = q[i-1] + dt* qf(w[i-1], q[i-1], l[i-1], T[i-1], z[i-1])
+                l[i] = l[i-1] + dt* lf(w[i-1], q[i-1], l[i-1], T[i-1], z[i-1])
+                        
+        elif self.method == 'Matsuno':
+            for i in range(1, NT):
+                w_pred = w[i-1] + dt* wf(T[i-1], z[i-1], l[i-1], w[i-1])
+                T_pred = T[i-1] + dt* Tf(w[i-1], q[i-1], l[i-1], T[i-1], z[i-1])
+                z_pred = z[i-1] + dt* zf(w[i-1])
+                q_pred = q[i-1] + dt* qf(w[i-1], q[i-1], l[i-1], T[i-1], z[i-1])
+                l_pred = l[i-1] + dt* lf(w[i-1], q[i-1], l[i-1], T[i-1], z[i-1])
+                w[i] = w[i-1] + dt* wf(T_pred, z_pred, l_pred, w_pred)
+                T[i] = T[i-1] + dt* Tf(w_pred, q_pred, l_pred, T_pred, z_pred)
+                z[i] = z[i-1] + dt* zf(w_pred)
+                q[i] = q[i-1] + dt* qf(w_pred, q_pred, l_pred, T_pred, z_pred)
+                l[i] = l[i-1] + dt* lf(w_pred, q_pred, l_pred, T_pred, z_pred)                
+        else:
+            raise(ValueError('Input a valid method'))
+                
         self.storage = np.array([T, w, z, q, l])
         self.storage = np.vstack((self.storage, self.pressure))
         return self.storage
@@ -307,8 +331,8 @@ if __name__ == "__main__":
     #sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72201, "01102019")
     
     parcel = CloudParcel(T0 = sounding.surface_temperature + 1.,
-                         q0 = 0.01,
-                         mix_len=0.0, w0=0.0)
+                         q0 = 0.02,
+                         mix_len=0.0, w0=0.0, method='Matsuno')
     
     T, w, z, q, l, p = parcel.run(0.5, 6000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
 
