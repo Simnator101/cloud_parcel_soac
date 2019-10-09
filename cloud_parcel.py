@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import sounding as snd
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 # Constants
 gval = 9.81 # m / s^2
@@ -91,6 +92,27 @@ class CloudParcel(object):
             assert callable(flux_func), str(flux_func) + " is not a function"
             return flux_func(wv, wl, wmax, dt)
         
+        def precipitation(wl):
+            if not environ.wyoming_info.valid or not hasattr(environ, 'rain'):
+                return 0.0
+            
+            pwat = environ.wyoming_info.precipitable_water_mm * 1e-3
+            slat, slon = (environ.wyoming_info.lat,
+                          environ.wyoming_info.lon % 360.0)
+            
+            tdelta = environ.wyoming_info.observation_time - datetime(1900, 1, 1) 
+            
+            itim = np.argmin(np.abs(environ.ecmwf_dimensions[0] - tdelta.days * 24))
+            ilat = np.argmin(np.abs(environ.ecmwf_dimensions[1] - slat))
+            ilon = np.argmin(np.abs(environ.ecmwf_dimensions[2] - slon))
+            
+            dset = environ.rain[itim,
+                                ilat-1:ilat+1,
+                                ilon-1:ilon+1]
+            cp = dset.sum() + dset[1].sum() + dset[:,1].sum() + dset[1,1]
+            cp /= 16.
+            return cp * 0.1 / pwat * wl     
+        
         
         def Tf(w, wv, wl, T, z):
             mu_eval = self.__mu
@@ -112,7 +134,7 @@ class CloudParcel(object):
             mu_eval = self.__mu
             if type(mu_eval) is not float:
                mu_eval = mu_eval(z)
-            return -flux(wv, wl, T, z) - mu_eval * wl * abs(w)
+            return -flux(wv, wl, T, z) - precipitation(wl) - mu_eval * wl * abs(w)
         
         if self.method == 'RK4':
             for i in range(1, NT):
@@ -229,7 +251,9 @@ class CloudParcel(object):
                 l[i] = l[i-1] + dt* lf(w_pred, q_pred, l_pred, T_pred, z_pred)                
         else:
             raise(ValueError('Input a valid method'))
-                
+        
+        
+        self.precip = np.array([precipitation(lv) for lv in l])
         self.storage = np.array([T, w, z, q, l])
         self.storage = np.vstack((self.storage, self.pressure))
         return self.storage
@@ -344,7 +368,7 @@ def test_model_stability(dt=0.5):
                for method in methods]   
     f, ax = plt.subplots(1, 2, sharey=True, figsize=(9,6))
     for i, mstr, parcel in zip(range(3), methods, parcels):
-        T, w, z, q, l, p = parcel.run(.5, 10000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
+        T, w, z, q, l, pre, p = parcel.run(.5, 10000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
         zpeaki = find_peaks(z)[0]
         zpeaks = z[zpeaki] / z[zpeaki[0]]
         
@@ -369,12 +393,13 @@ def test_model_stability(dt=0.5):
             
 if __name__ == "__main__":
     sounding = snd.Sounding(None, None)
-    sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
-    #sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72201, "01102019")
+    #sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
+    sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72210, "10102018")
+    sounding.attach_ecmwf_field("./oct_2018_cp.nc", {'cp': 'rain'})
     
-    parcel = CloudParcel(T0 = sounding.surface_temperature + 1.,
-                         q0 = 0.02,
-                         mix_len=0.0, w0=0.0, method='Matsuno')
+    parcel = CloudParcel(T0 = sounding.surface_temperature + 4.,
+                         q0 = sounding.surface_humidity,
+                         mix_len=1e-4, w0=0.0, method='RK4')
     
     T, w, z, q, l, p = parcel.run(0.5, 6000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
 
@@ -387,20 +412,8 @@ if __name__ == "__main__":
     ax.plot(T, p * 1e-2)
     plt.show()
     
+    # Test Sections
     test_energy_budget(parcel)
-    test_model_stability()
+#    test_model_stability()
 #    test_water_budget(parcel)
     
-    
-#    plt.plot(q+l)
-#    plt.ylim([0.,0.0201])
-#    plt.show()
-#    plt.plot(0.5*w**2+gval*z+cpa*T+q*cpv*T-(Rair+q*Rv)*T)
-#    plt.show()
-#    plt.plot(0.5*w**2+gval*z+cpa*T+q*cpv*T-(Rair+q*Rv)*T*(p-p[0])/p)
-#    plt.plot(0.5*w**2)
-#    plt.plot(gval*z)
-#    plt.plot(cpa*T)
-#    plt.plot(q*cpv*T)
-#    plt.plot(-(Rair+q*Rv)*T*(p-p[0])/p)
-#    plt.legend(['total','kin','pot','temp','water','druk'])
