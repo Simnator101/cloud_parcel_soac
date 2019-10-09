@@ -16,6 +16,7 @@ import requests
 import re
 import os.path
 from scipy.integrate import odeint
+from netCDF4 import Dataset
 
 from skewt_logp import *
 
@@ -539,6 +540,17 @@ class Sounding(object):
         assert rres.status_code == 200, "URL %s cannot be read" % url
         txt = re.sub('<[^<]+?>', '', rres.text)
         self.from_wyoming_text(txt.replace("\\n", "\n"), raw=raw)
+        
+    def attach_ecmwf_field(self, file_n, fields):
+        assert type(fields) is dict, "Fields must be a ECMWF to internal map"
+        data = Dataset(file_n, mode='r')
+        if not hasattr(self, "ecmwf_dimensions"):
+            setattr(self, 'ecmwf_dimensions', (data['time'][:],
+                                               data['latitude'][:],
+                                               data['longitude'][:]))
+        for key, field in fields.items():
+            setattr(self, field, data[key][:])
+        data.close()
                 
         
     def sample(self, z):
