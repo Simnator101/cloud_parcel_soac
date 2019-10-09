@@ -23,6 +23,8 @@ Lv = 2.5e6      # J / kg
 def trial_lapse_rate(z):
     if 0.0 <= z < 1500.0:
         return -10.0e-3
+#    elif 1500.0 <= z < 3000.0:
+#        return 2e-3
     elif 1500.0 <= z < 10000.0:
         return -6.5e-3
     else:
@@ -39,6 +41,7 @@ class CloudParcel(object):
         self.induced_mass = 0.5
         self.storage = None
         self.dt = None
+        self.surf_p = 1e5
         
     @staticmethod
     def tanh_vapour_flow(wv, wl, wmax, dt):
@@ -53,7 +56,6 @@ class CloudParcel(object):
         assert(NT > 0)
         assert(dt > 0.0)
         #print(self.__t0, self.__w0, self.__z0)
-        self.dt = dt
         
         T = np.full(NT, self.__t0)
         w = np.full(NT, self.__w0)
@@ -63,6 +65,9 @@ class CloudParcel(object):
         p = environ.pressure_profile()
         acc = gval / (1 + self.induced_mass)
         
+        self.dt = dt
+        self.surf_p = p[0]
+                
         def wf(T, z, l, w):
             mu_eval = self.__mu
             if type(mu_eval) is not float:
@@ -201,8 +206,20 @@ class CloudParcel(object):
             q[i] = q[i-1] + 1. / 6. * (k1q + 2.0 * (k2q + k3q) + k4q)
             l[i] = l[i-1] + 1. / 6. * (k1l + 2.0 * (k2l + k3l) + k4l)
             
-        self.storage = (T, w, z, q, l)
-        return T, w, z, q, l
+        self.storage = np.array([T, w, z, q, l])
+        self.storage = np.vstack((self.storage, self.pressure))
+        return self.storage
+    
+    @property
+    def pressure(self):
+        assert self.storage is not None, "No profile is available"
+        p0 = self.surf_p
+        pvals = np.full(len(self.storage[0]), p0)
+        for i in range(1, pvals.size):
+            pvals[i] = p0 * np.exp(-gval / Rair * np.trapz(1. / self.storage[0][:i],
+                                                               self.storage[2][:i]))
+        
+        return pvals
     
     @property
     def static_energy(self):
@@ -211,6 +228,41 @@ class CloudParcel(object):
     @property
     def static_moist_energy(self):
         return self.static_energy + self.storage[3] * Lv
+    
+    @property
+    def LCL(self):
+        assert self.storage is not None, "No profile is available"
+        Td = snd.dew_point_temperature(self.storage[3][0], self._surp)      
+        return 122.0 * (T - Td)
+    
+    @property
+    def one_cycle(self):
+        assert self.storage is not None, "No profile is available"
+        index = np.argwhere(np.diff(self.storage[2]) < 0.0)[0,0]
+        return self.storage.T[:index].T
+            
+    def EL(self, environ):
+        assert self.storage is not None, "No profile is available"
+        T, p = self.one_cycle[np.array([0,5])]
+        Tsnd = environ.temperature
+        psnd = environ.pressure_profile()
+        
+        # Interpolate sounding space into profile space
+        
+        print(T.size, Tsnd.size)
+        Tsnd_map = np.empty(T.size)
+        for i, pv in enumerate(p):
+            ilow = np.argwhere(psnd >= pv)[-1,0]
+            iupp = np.argwhere(psnd <= pv)[0,0]
+            
+            if np.isclose(psnd[iupp], psnd[ilow]):
+                Tsnd_map[i] = Tsnd[ilow]
+            else:
+                invf = 1. + (np.log(psnd[iupp]) - np.log(pv)) / (np.log(pv) - np.log(psnd[ilow]))
+                Tsnd_map[i] = Tsnd[iupp] ** (1. / invf) * Tsnd[ilow] ** (1 - 1. / invf)
+        return (T - Tsnd_map) / Tsnd_map
+        
+        
     
 # TEST PLOTS
 def test_energy_budget(parcel):
@@ -255,24 +307,22 @@ if __name__ == "__main__":
     #sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72201, "01102019")
     
     parcel = CloudParcel(T0 = sounding.surface_temperature + 1.,
-                         q0 = 0.02,
+                         q0 = 0.01,
                          mix_len=0.0, w0=0.0)
     
-    T, w, z, q, l = parcel.run(0.5, 6000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
+    T, w, z, q, l, p = parcel.run(0.5, 6000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
 
 
     plt.plot(np.arange(6000) * 0.5, z)
     plt.show()
     
-    p = np.full(T.size, 1e5)
-    for i in range(1, T.size):
-        p[i] = p[0] * np.exp(np.trapz(-gval / Rair / T[:i], z[:i]))
+
     f, ax = sounding.SkewT_logP(show=False)
     ax.plot(T, p * 1e-2)
     plt.show()
     
     test_energy_budget(parcel)
-    test_water_budget(parcel)
+#    test_water_budget(parcel)
     
     
 #    plt.plot(q+l)

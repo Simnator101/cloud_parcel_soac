@@ -33,6 +33,12 @@ def saturation_pressure(T):
     T0 = 273.16
     return 610.78 * np.exp(Lv / Rv / T0 * (T - T0) / T)
 
+def dew_point_temperature(q, p):
+    T0 = 273.16
+    es0 = 610.78
+    eta = Rair / Rv
+    return T0 / (1 - np.log((p / es0 * q / eta) ** (Rv * T0 / Lv)))
+
 def relative_humidity(qs, p, T):
     air_d = p / T / Rair
     return qs * air_d * Rv * T / saturation_pressure(T) * 100.0
@@ -42,6 +48,7 @@ def moist_adiabatic_lapse_rate(T, p):
     eps = Rair / Rv
     frac = (Rair * T + Lv * qs) / (cpa + (Lv * Lv * qs * eps) / Rair / T / T)
     return frac / p
+
 
 class SoundingRegion(Enum):
     NORTH_AMERICA = "naconf"
@@ -208,6 +215,7 @@ class Sounding(object):
         for i in range(nsamps):
             RH = relative_humidity(self.__q[i], self.__p[i], self.__T[i])
             self.__Td[i] = self.dew_point_NOAA(self.__T[i], RH)
+            
             
     @staticmethod
     def _decode_level(LEV, D, E, mode='AA'):
@@ -564,6 +572,7 @@ class Sounding(object):
             p[i] = p0 * np.exp(np.trapz(-gval / Rair / self.__T[:i], self.__z[:i]))
         return p
     
+    
     @staticmethod
     def dew_point_NOAA(T, RH):
         T -= 273.15
@@ -577,6 +586,9 @@ class Sounding(object):
         g = np.log(RH / 100.0 * ps)
         return c * g / (b - g) + 273.15
             
+    @property
+    def temperature(self):
+        return self.__T
        
     @property
     def height(self):
@@ -671,16 +683,16 @@ class Sounding(object):
         ax.plot(self.__T, self.__p * 1e-2, color='C3', label='Temperature (K)')
         ax.plot(self.__Td, self.__p * 1e-2, color='C2', label='Dew point temperature (K)')
         
-        atxt = None
+        atxt = [None, None]
         if self.wyoming_info.valid:
-            ax.text(0.13, 0.89, "%i %s %s" % (self.wyoming_info.id_num,
-                                              self.wyoming_info.id,
-                                              self.wyoming_info.observation_time.strftime("%HZ %d %b %Y")),
+            atxt[0] = ax.text(0.13, 0.89, "%i %s %s" % (self.wyoming_info.id_num,
+                                                        self.wyoming_info.id,
+                                                        self.wyoming_info.observation_time.strftime("%HZ %d %b %Y")),
                     transform=f.transFigure,  weight='bold')
         if self.wyoming_info.valid and info_plot:
-            atxt = ax.text(-0.2, 0.5, str(self.wyoming_info),
-                           transform=f.transFigure,
-                           va='center', ha='left')
+            atxt[1] = ax.text(-0.2, 0.5, str(self.wyoming_info),
+                               transform=f.transFigure,
+                               va='center', ha='left')
     
         
         # Labels
@@ -703,9 +715,9 @@ class Sounding(object):
             plt.show()
             
         if save_file and atxt:
-            f.savefig(save_file, dpi=300, bbox_extra_artists=(atxt,))
+            f.savefig(save_file, dpi=300, bbox_extra_artists=atxt, bbox_inches='tight')
         elif save_file:
-            f.savefig(save_file, dpi=300)
+            f.savefig(save_file, dpi=300, bbox_inches='tight')
         return f, ax
         
         
@@ -729,4 +741,4 @@ if __name__ == "__main__":
     # Plot Wyoming Sounding
     # Grab North American Sounding over Florida Key West from 1 Oct 2019 00 UTC
     snd.from_wyoming_httpd(SoundingRegion.NORTH_AMERICA, 72201, "01102019")
-    f, ax = snd.SkewT_logP()
+    f, ax = snd.SkewT_logP(save_file='./KEY_01102019_sounding.png')
