@@ -324,6 +324,48 @@ def test_water_budget(parcel):
     plt.legend(bbox_to_anchor=(1,1))
     plt.show()
     del t
+    
+def works(d):
+    tarray = np.array([False] * len(d), dtype=np.bool)
+    for i in range(1, d.size-1):
+        if d[i-1] < d[i] and d[i+1] < d[i]:
+            tarray[i] = True
+    return np.argwhere(tarray)
+    
+def test_model_stability(dt=0.5):
+    from scipy.signal import find_peaks
+    
+    sounding = snd.Sounding(None, None)
+    sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
+    methods = ["Euler", "Matsuno", "RK4"]
+    parcels = [CloudParcel(T0 = sounding.surface_temperature + 1.,
+                         q0 = 0.02,
+                         mix_len=0.0, w0=0.0, method=method) 
+               for method in methods]   
+    f, ax = plt.subplots(1, 2, sharey=True, figsize=(9,6))
+    for i, mstr, parcel in zip(range(3), methods, parcels):
+        T, w, z, q, l, p = parcel.run(.5, 10000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
+        zpeaki = find_peaks(z)[0]
+        zpeaks = z[zpeaki] / z[zpeaki[0]]
+        
+        zmin = -z + z[zpeaki[0]]
+        zthroughi = find_peaks(zmin)[0]
+        
+        zthroughs = zmin[zthroughi] / zmin[zthroughi[0]]
+        
+        ax[0].plot(zpeaki * dt, zpeaks, color='C%i' % i)
+        ax[1].plot(zthroughi * dt, zthroughs, color='C%i' % i, label=mstr)
+    ax[0].grid()
+    ax[1].grid()
+    ax[0].set_xlabel("Time (s)")
+    ax[1].set_xlabel("Time (s)")
+    ax[0].set_ylabel("Relative Peak/Through Height")
+    ax[0].set_xlim(500, 4000)
+    ax[1].set_xlim(500, 4000)
+    
+    plt.legend(bbox_to_anchor=(1,1))
+    plt.tight_layout()
+    plt.show()
             
 if __name__ == "__main__":
     sounding = snd.Sounding(None, None)
@@ -346,6 +388,7 @@ if __name__ == "__main__":
     plt.show()
     
     test_energy_budget(parcel)
+    test_model_stability()
 #    test_water_budget(parcel)
     
     
