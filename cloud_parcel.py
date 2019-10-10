@@ -104,7 +104,8 @@ class CloudParcel(object):
             tdelta = environ.wyoming_info.observation_time - datetime(1900, 1, 1) 
             
             if self.__iecmwf[0] is None:
-                self.__iecmwf[0] = np.argmin(np.abs(environ.ecmwf_dimensions[0] - tdelta.days * 24))
+                ctim = tdelta.total_seconds() / 60 / 60 
+                self.__iecmwf[0] = np.argmin(np.abs(environ.ecmwf_dimensions[0] - ctim))
                 self.__iecmwf[1] = np.argmin(np.abs(environ.ecmwf_dimensions[1] - slat))
                 self.__iecmwf[2] = np.argmin(np.abs(environ.ecmwf_dimensions[2] - slon))
             
