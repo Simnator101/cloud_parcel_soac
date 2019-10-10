@@ -111,7 +111,7 @@ class CloudParcel(object):
                                 ilon-1:ilon+1]
             cp = dset.sum() + dset[1].sum() + dset[:,1].sum() + dset[1,1]
             cp /= 16.
-            return cp * 0.1 / pwat * wl     
+            return (dt/24/3600) * cp / pwat * wl   
         
         
         def Tf(w, wv, wl, T, z):
@@ -394,10 +394,10 @@ def test_model_stability(dt=0.5):
 if __name__ == "__main__":
     sounding = snd.Sounding(None, None)
     #sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
-    sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72210, "10102018")
+    sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72210, "10102018",utc12=True)
     sounding.attach_ecmwf_field("./oct_2018_cp.nc", {'cp': 'rain'})
     
-    parcel = CloudParcel(T0 = sounding.surface_temperature + 4.,
+    parcel = CloudParcel(T0 = sounding.surface_temperature + 2.,
                          q0 = sounding.surface_humidity,
                          mix_len=1e-4, w0=0.0, method='RK4')
     
@@ -405,6 +405,7 @@ if __name__ == "__main__":
 
 
     plt.plot(np.arange(6000) * 0.5, z)
+    plt.grid()
     plt.show()
     
 
@@ -413,7 +414,13 @@ if __name__ == "__main__":
     plt.show()
     
     # Test Sections
-    test_energy_budget(parcel)
+#    test_energy_budget(parcel)
 #    test_model_stability()
 #    test_water_budget(parcel)
-    
+    plt.plot(np.arange(6000) * 0.5,parcel.precip)
+    plt.grid()
+    plt.show()
+    plt.plot(np.arange(6000) * 0.5,q+l)
+    plt.ylim([0,1.1*sounding.surface_humidity])
+    plt.grid()
+    plt.show()
