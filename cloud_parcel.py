@@ -396,6 +396,14 @@ def test_model_stability(dt=0.5):
     plt.legend(bbox_to_anchor=(1,1))
     plt.tight_layout()
     plt.show()
+    
+    
+def mixing_func(z):
+    cloud_top = 20e3
+    if np.isclose(z, cloud_top):
+        return 1
+    return min(1.0, 1. / (cloud_top - z))
+    
             
 if __name__ == "__main__":
     sounding = snd.Sounding(None, None)
@@ -405,7 +413,7 @@ if __name__ == "__main__":
     
     parcel = CloudParcel(T0 = sounding.surface_temperature + 2.,
                          q0 = sounding.surface_humidity,
-                         mix_len=1e-4, w0=0.0, method='RK4')
+                         mix_len=mixing_func, w0=0.0, method='RK4')
     
     T, w, z, q, l, p = parcel.run(0.5, 6000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
 
