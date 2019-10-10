@@ -69,6 +69,7 @@ class CloudParcel(object):
         
         self.dt = dt
         self.surf_p = p[0]
+        self.__iecmwf = [None, None, None]
                 
         def wf(T, z, l, w):
             mu_eval = self.__mu
@@ -102,16 +103,18 @@ class CloudParcel(object):
             
             tdelta = environ.wyoming_info.observation_time - datetime(1900, 1, 1) 
             
-            itim = np.argmin(np.abs(environ.ecmwf_dimensions[0] - tdelta.days * 24))
-            ilat = np.argmin(np.abs(environ.ecmwf_dimensions[1] - slat))
-            ilon = np.argmin(np.abs(environ.ecmwf_dimensions[2] - slon))
+            if self.__iecmwf[0] is None:
+                self.__iecmwf[0] = np.argmin(np.abs(environ.ecmwf_dimensions[0] - tdelta.days * 24))
+                self.__iecmwf[1] = np.argmin(np.abs(environ.ecmwf_dimensions[1] - slat))
+                self.__iecmwf[2] = np.argmin(np.abs(environ.ecmwf_dimensions[2] - slon))
             
+            itim, ilat, ilon = self.__iecmwf
             dset = environ.rain[itim,
                                 ilat-1:ilat+1,
                                 ilon-1:ilon+1]
             cp = dset.sum() + dset[1].sum() + dset[:,1].sum() + dset[1,1]
             cp /= 16.
-            return cp * 0.1 / pwat * wl     
+            return cp / pwat * wl     
         
         
         def Tf(w, wv, wl, T, z):
@@ -256,6 +259,7 @@ class CloudParcel(object):
         self.precip = np.array([precipitation(lv) for lv in l])
         self.storage = np.array([T, w, z, q, l])
         self.storage = np.vstack((self.storage, self.pressure))
+        del self.__iecmwf
         return self.storage
     
     @property
