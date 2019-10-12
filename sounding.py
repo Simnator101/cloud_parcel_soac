@@ -601,6 +601,40 @@ class Sounding(object):
     @property
     def temperature(self):
         return self.__T
+    
+    @property
+    def humidity(self):
+        return self.__q
+    
+    @property
+    def virtual_temperature(self):
+        return self.__T * (1.0 + 0.608 * self.__q)
+    
+    @property
+    def convective_precipitation(self):
+        if not hasattr(self, "rain"):
+            raise ValueError("No convective rain data found")
+        if not self.wyoming_info.valid:
+            return 0.0 # Not valid metadata to determine station location
+        
+        inds = [None, None, None]
+        
+        if hasattr(self, "ecmwf_dimensions"):
+            tdelta = self.wyoming_info.observation_time - datetime(1900, 1, 1) 
+            stim = tdelta.total_seconds() / 3600.0
+            slat, slon = (self.wyoming_info.lat, self.wyoming_info.lon % 360)
+        
+            inds[0] = np.argmin(np.abs(self.ecmwf_dimensions[0] - stim))
+            inds[1] = np.argmin(np.abs(self.ecmwf_dimensions[1] - slat))
+            inds[2] = np.argmin(np.abs(self.ecmwf_dimensions[2] - slon))
+            
+            # Use weighted average to calculate mean precipitation at the 
+            # station's location
+            dset = self.rain[inds[0], inds[1]-1:inds[1]+1,inds[2]-1:inds[2]+1]
+            cp = dset.sum() + dset[1].sum() + dset.T[1].sum() + dset[1,1] 
+            return cp / 16.0
+        raise ValueError("No valid dim. info found to interperet rain fields")
+        
        
     @property
     def height(self):
