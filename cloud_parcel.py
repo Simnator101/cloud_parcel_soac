@@ -11,6 +11,8 @@ import numpy as np
 import sounding as snd
 import matplotlib.pyplot as plt
 from datetime import datetime
+from scipy.integrate import odeint
+
 
 
 # Constants
@@ -304,20 +306,56 @@ class CloudParcel(object):
         return B
         
         
-    def CAPE_CIN(self, environ):
-        B = self._buoyancy(environ)
-        Cp, Cn = (0.0, 0.0)
+    def CAPE_CIN_theoretic(self, environ):
+        Td = snd.dew_point_temperature(self.storage['q'][0], self.storage['p'][0])
+        z_LCL = 122.0 * (self.storage['T'][0] - Td)
+        T_LCL = self.storage['T'][0] - gval / cpa * z_LCL
+        p_LCL = self.pressure[0] * (1 - gval / cpa / self.storage['T'][0] * z_LCL) ** (cpa / Rair)
         
-        for i in range(1, B.size):
-            dz = self.storage['z'][i] - self.storage['z'][i-1]
-            Bint = (B[i-1] + B[i]) / 2.0
-            if Bint >= 0.0:
-                Cp += Bint * dz
-            else:
-                Cn += Bint * dz
+        p_prof = np.linspace(p_LCL, 100, 10000)
+        T_prof = odeint(snd.moist_adiabatic_lapse_rate, T_LCL, p_prof)
+        
+        
+        z_adiab = np.linspace(self.storage['z'][0], z_LCL, 100)
+        T_adiab = self.storage['T'][0] - gval / cpa * z_adiab
+        p_adiab = np.full(T_adiab.size, self.pressure[0])
+        for i in range(1, p_adiab.size):
+            p_adiab[i] = p_adiab[0] * np.exp(np.trapz(-gval / Rair / T_adiab[:i], z_adiab[:i]))
             
-        return (gval / (1.0 + self.induced_mass) * Cp,
-                gval / (1.0 + self.induced_mass) * Cn)
+        p_prof = np.r_[p_adiab, p_prof]
+        T_prof = np.r_[T_adiab, T_prof.flatten()]
+        Te_prof = np.empty(T_prof.size)        
+        
+        psnd = environ.pressure_profile()
+        for i, pv in enumerate(p_prof):
+            ilow = np.argwhere(psnd >= pv)[-1,0]
+            if ilow == psnd.size - 1:
+                Te_prof[i] = environ.temperature[ilow]
+                continue
+            iupp = np.argwhere(psnd <= pv)[0,0]
+            
+            if np.isclose(psnd[iupp], psnd[ilow]):
+                Te_prof[i] = environ.temperature[ilow]
+            else:
+                f = pow((psnd[iupp] - pv) / (pv - psnd[ilow]) + 1, -1)
+                Te_prof[i] = environ.temperature[iupp] ** f * environ.temperature[ilow] ** (1 - f)
+                
+                
+        B = -gval ** 2 / (1 + self.induced_mass) * p_prof / Rair / T_prof
+        B *= (T_prof - Te_prof) / Te_prof
+        CAPE = np.zeros(B.size)
+        for i in range(1, CAPE.size):
+            CAPE[i] = np.trapz(B[:i], p_prof[:i])
+            
+        plt.plot(CAPE, p_prof * 1e-2)
+        plt.grid()
+        plt.ylim(1e3, 0)
+        plt.show()
+        
+        
+        
+        
+        return p_prof, T_prof
     
     @property
     def precipitation_total(self):
@@ -377,7 +415,8 @@ class CloudParcel(object):
             
     def EL(self, environ):
         assert self.storage is not None, "No profile is available"
-        T, p = self.one_cycle[np.array([0,5])]
+        _tmp = self.one_cycle
+        T, p = _tmp['T'], _tmp['p']
         Tsnd = environ.temperature
         psnd = environ.pressure_profile()
         
@@ -482,13 +521,13 @@ def mixing_func(z):
             
 if __name__ == "__main__":
     sounding = snd.Sounding(None, None)
-    #sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
-    sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72210, "10102018",utc12=False)
+    sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
+    #sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72210, "10102018",utc12=False)
     sounding.attach_ecmwf_field("./oct_2018_cp.nc", {'cp': 'rain'})
     
     parcel = CloudParcel(T0 = sounding.surface_temperature + 3,
-                         q0 = sounding.surface_humidity,
-                         mix_len=1./10e3, w0=0.0, method='RK4')
+                         q0 = 0.01,
+                         mix_len=0./10e3, w0=0.0, method='RK4')
     
     parcel.run(0.5, 6000, sounding, flux_func=CloudParcel.tanh_vapour_flow, pre_method='arctan')
 
@@ -497,9 +536,10 @@ if __name__ == "__main__":
     plt.grid()
     plt.show()
     
-
+    pp, Tp = parcel.CAPE_CIN_theoretic(sounding)
     f, ax = sounding.SkewT_logP(show=False)
     ax.plot(parcel.storage['T'], parcel.pressure * 1e-2)
+    ax.plot(Tp, pp * 1e-2)
     plt.show()
     
     # Test Sections
