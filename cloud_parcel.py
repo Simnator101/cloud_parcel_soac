@@ -21,8 +21,9 @@ Rv = 461.5                      # J / k / kg
 cpa = 1004.0                    # J / kg / K
 cpv = 716.0                     # J / kg / K
 Lv = 2.5e6                      # J / kg
-hydrometeor_r = 4e-3            # 1 / s
+hydrometeor_r = 5e-3            # 1 / s
 water_std_density = 997.0       # kg / m ^ 3
+l_rain_limit = 0.01            # kg / kg
 
 def trial_lapse_rate(z):
     if 0.0 <= z < 1500.0:
@@ -56,7 +57,7 @@ class CloudParcel(object):
         return wl * v
         
         
-    def run(self, dt, NT, environ, flux_func=None):
+    def run(self, dt, NT, environ, flux_func=None, pre_method='default'):
         assert(environ is not None)
         assert(NT > 0)
         assert(dt > 0.0)
@@ -99,29 +100,16 @@ class CloudParcel(object):
         def precipitation(wl):
             if not environ.wyoming_info.valid or not hasattr(environ, 'rain'):
                 return 0.0
-            """
-            pwat = environ.wyoming_info.precipitable_water_mm * 1e-3
-            slat, slon = (environ.wyoming_info.lat,
-                          environ.wyoming_info.lon % 360.0)
-            
-            tdelta = environ.wyoming_info.observation_time - datetime(1900, 1, 1) 
-            
-            if self.__iecmwf[0] is None:
-                ctim = tdelta.total_seconds() / 60 / 60 
-                self.__iecmwf[0] = np.argmin(np.abs(environ.ecmwf_dimensions[0] - ctim))
-                self.__iecmwf[1] = np.argmin(np.abs(environ.ecmwf_dimensions[1] - slat))
-                self.__iecmwf[2] = np.argmin(np.abs(environ.ecmwf_dimensions[2] - slon))
-            
-            itim, ilat, ilon = self.__iecmwf
-            dset = environ.rain[itim,
-                                ilat-1:ilat+1,
-                                ilon-1:ilon+1]
-            cp = dset.sum() + dset[1].sum() + dset[:,1].sum() + dset[1,1]
-            cp /= 16.
 
-            return (dt/24/3600) * cp / pwat * wl  
-            """
-            return wl * hydrometeor_r
+            if pre_method == 'default':
+                return wl * hydrometeor_r
+            elif pre_method == 'fixed_amount':
+                return max(0.0, wl - l_rain_limit) / dt
+            elif pre_method == 'arctan':
+                P_rain_sens = 2. / l_rain_limit
+                Pr = (np.tanh((P_rain_sens * (wl - l_rain_limit))) + 1.0) / 2.0
+                return wl * Pr * hydrometeor_r
+            raise ValueError("Invalid precipitation method: " + str(pre_method))
         
         
         def Tf(w, wv, wl, T, z):
@@ -462,7 +450,8 @@ def test_model_stability(dt=0.5):
                for method in methods]   
     f, ax = plt.subplots(1, 2, sharey=True, figsize=(9,6))
     for i, mstr, parcel in zip(range(3), methods, parcels):
-        T, w, z, q, l, pre, p = parcel.run(.5, 10000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
+        parcel.run(.5, 10000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
+        z = parcel.storage['z']
         zpeaki = find_peaks(z)[0]
         zpeaks = z[zpeaki] / z[zpeaki[0]]
         
@@ -478,8 +467,8 @@ def test_model_stability(dt=0.5):
     ax[0].set_xlabel("Time (s)")
     ax[1].set_xlabel("Time (s)")
     ax[0].set_ylabel("Relative Peak/Through Height")
-    ax[0].set_xlim(500, 4000)
-    ax[1].set_xlim(500, 4000)
+    ax[0].set_xlim(500, dt * z.size)
+    ax[1].set_xlim(500, dt * z.size)
     
     plt.legend(bbox_to_anchor=(1,1))
     plt.tight_layout()
@@ -501,7 +490,7 @@ if __name__ == "__main__":
                          q0 = sounding.surface_humidity,
                          mix_len=1./10e3, w0=0.0, method='RK4')
     
-    parcel.run(0.5, 6000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
+    parcel.run(0.5, 6000, sounding, flux_func=CloudParcel.tanh_vapour_flow, pre_method='arctan')
 
 
     plt.plot(np.arange(6000) * 0.5, parcel.storage['z'])
