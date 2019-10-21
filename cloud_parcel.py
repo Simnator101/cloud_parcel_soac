@@ -36,30 +36,74 @@ def trial_lapse_rate(z):
         return -6.5e-3
     else:
         return 1e-3
-
-
-class CloudParcel(object):
-    def __init__(self, T0=300.0, z0=0.0, w0=0.0, q0=0.0, mix_len=0.0, method='RK4'):
-        self.__t0 = T0
-        self.__w0 = w0
-        self.__z0 = z0
-        self.__q0 = q0
-        self.__mu = mix_len
-        self.induced_mass = 0.5
-        self.storage = None
-        self.dt = None
-        self.surf_p = 1e5
-        self.method = method
         
+    
+class WaterManager(object):
+    def __init__(self, condensation_fnc=None, rain_fnc=None):
+        self.cf = condensation_fnc
+        self.rf = rain_fnc
+            
+    def water_flux(self, wv, wl, wmax, dt):
+        return self.cf(wv, wl, wmax, dt) if self.cf is not None else 0.0
+    
+    def rain_rate(self, wv, wl, wmax, dt):
+        return self.rf(wv, wl, wmax, dt) if self.rf is not None else 0.0
+    
+    
+    # Default Functions
     @staticmethod
     def tanh_vapour_flow(wv, wl, wmax, dt):
         v = -np.tanh(15.0 * (wv / wmax - 1.0)) * 0.2 * dt
         if v < 0.0:
             return wv * v
         return wl * v
+    
+    @staticmethod
+    def step_vapour_flow(wv, wl, wmax, dt, **kwargs):
+        fl = 0.0
+        mult = 1.0 if not "mult" in kwargs else kwargs["mult"]
         
+        if wv/wmax > 1.01:
+            fl = wmax - wv
+        elif wv/wmax < 0.99:
+            fl = min(wmax - wv, wl)
+        return fl * mult
+    
+    @staticmethod
+    def precip_fixed_rate(wv, wl, wmax, dt):
+        return wl * hydrometeor_r
+    
+    @staticmethod
+    def precip_fixed_amount(wv, wl, wmax, dt):
+        return max(0.0, wl - l_rain_limit) / dt
+    
+    @staticmethod
+    def precip_tanh_rate(wv, wl, wmax, dt):
+        P_rain_sens = 2. / l_rain_limit
+        Pr = (np.tanh((P_rain_sens * (wl - l_rain_limit))) + 1.0) / 2.0
+        return wl * Pr * hydrometeor_r
+                
+
+
+
+class CloudParcel(object):
+    def __init__(self, T0=300.0, z0=0.0, w0=0.0, q0=0.0, mix_len=0.0, method='RK4'):
+        assert isinstance(mix_len, (int, float, np.int, np.float))
+        self.__t0 = T0
+        self.__w0 = w0
+        self.__z0 = z0
+        self.__q0 = q0
+        self.__mu = 1. / mix_len
+        self.induced_mass = 0.5
+        self.storage = None
+        self.dt = None
+        self.surf_p = 1e5
+        self.method = method
         
-    def run(self, dt, NT, environ, flux_func=None, pre_method='default'):
+    
+    
+        
+    def run(self, dt, NT, environ, WM):
         assert(environ is not None)
         assert(NT > 0)
         assert(dt > 0.0)
@@ -72,77 +116,47 @@ class CloudParcel(object):
         l = np.zeros(NT)
         p = environ.pressure_profile()
         acc = gval / (1 + self.induced_mass)
-        acc = gval
         
         self.dt = dt
         self.surf_p = p[0]
         self.__iecmwf = [None, None, None]
+        
+        
+        def super_sat(j):
+            pprox = np.interp(z[j], environ.height, p)
+            return q[j] / snd.saturation_mixr(T[j], pprox) - 1.0
                 
         def wf(T, z, l, w):
-            mu_eval = self.__mu
-            if type(mu_eval) is not float:
-               mu_eval = mu_eval(z)            
-            
+
             return acc * ((T - environ.sample(z)) / environ.sample(z) - l) -\
-                          mu_eval /(1. + self.induced_mass) * abs(w) * w
+                          self.__mu /(1. + self.induced_mass) * abs(w) * w
         
         # Different Flux functions
         def flux(wv, wl, T, z):
-            wmax = snd.saturation_pressure(T) / np.interp(z, environ.height, p) * Rair / Rv
-            if flux_func is None:
-                fl = 0.0
-                if wv/wmax > 1.01:
-                    fl = wmax - wv
-                elif wv/wmax < 0.99:
-                    fl = min(wmax - wv, wl)
-                return fl#*(1-np.exp(-dt/self.__Kmix))
-            
-            assert callable(flux_func), str(flux_func) + " is not a function"
-            return flux_func(wv, wl, wmax, dt)
-        
-        def precipitation(wl):
-            if pre_method == 'default':
-                return wl * hydrometeor_r
-            elif pre_method == 'fixed_amount':
-                return max(0.0, wl - l_rain_limit) / dt
-            elif pre_method == 'arctan':
-                P_rain_sens = 2. / l_rain_limit
-                Pr = (np.tanh((P_rain_sens * (wl - l_rain_limit))) + 1.0) / 2.0
-                return wl * Pr * hydrometeor_r
-            raise ValueError("Invalid precipitation method: " + str(pre_method))
+            wmax = snd.saturation_mixr(T, np.interp(z, environ.height, p))
+            return WM.water_flux(wv, wl, wmax, dt)
         
         
         def Tf(w, wv, wl, T, z):
-            mu_eval = self.__mu
-            if type(mu_eval) is not float:
-               mu_eval = mu_eval(z) 
-            return -gval / cpa * w - Lv / cpa * flux(wv, wl, T, z) - mu_eval *\
+            return -gval / cpa * w - Lv / cpa * flux(wv, wl, T, z) - self.__mu *\
                     (T - environ.sample(z)) * abs(w)
         
         def zf(w):
             return w
         
         def qf(w, wv, wl, T, z):
-            mu_eval = self.__mu
-            if not isinstance(mu_eval, (int, float)):
-               mu_eval = mu_eval(z)
-            return flux(wv, wl, T, z) - mu_eval * (wv - environ.sample_q(z)) *  abs(w)
+            return flux(wv, wl, T, z) - self.__mu * (wv - environ.sample_q(z)) *  abs(w)
         
         def mu_lq_eval(_val):
             w, wv, wl, z = _val
-            mu_eval = self.__mu
-            if not isinstance(mu_eval, (int, float)):
-               mu_eval = mu_eval(z)
-               
-            res = -mu_eval * (wv - environ.sample_q(z)) *  abs(w)
-            res -= mu_eval * wl * abs(w)
+            res = -self.__mu * (wv - environ.sample_q(z)) *  abs(w)
+            res -= self.__mu * wl * abs(w)
             return res
         
         def lf(w, wv, wl, T, z):
-            mu_eval = self.__mu
-            if not isinstance(mu_eval, (int, float)):
-               mu_eval = mu_eval(z)
-            return -flux(wv, wl, T, z) - precipitation(wl) - mu_eval * wl * abs(w)
+            #wmax = snd.saturation_mixr(T, np.interp(z, environ.height, p))
+            prea = WM.rain_rate(wv, wl, 0.1, dt)
+            return -flux(wv, wl, T, z) - prea - self.__mu * wl * abs(w)
         
         if self.method == 'RK4':
             for i in range(1, NT):
@@ -260,8 +274,8 @@ class CloudParcel(object):
         else:
             raise(ValueError('Input a valid method'))
         
-        
-        self.precip_rate = np.array([precipitation(lv) for lv in l])
+        self.precip_rate = map(lambda v: WM.rain_rate(v[0], v[1], 0.0, dt), zip(q, l))
+        self.precip_rate = np.array(list(self.precip_rate))
         self.storage = {'T' : T,
                         'w' : w,
                         'z' : z,
@@ -295,8 +309,22 @@ class CloudParcel(object):
         return pvals
     
     @property
+    def temperature(self):
+        return self.storage['T']
+    
+    @property
     def virtual_temperature(self):
         return self.storage['T'] * (1. + 0.608 * self.storage['q'] - self.storage['l'])
+    
+    @property
+    def potential_temperature(self):
+        pr = self.pressure.max()
+        return self.storage['T'] * np.power(pr / self.pressure, Rair / cpa)
+    
+    @property
+    def equivalent_ptemperature(self):
+        theta = self.potential_temperature
+        return theta + Lv * theta / cpa / self.temperature * self.storage['q']
     
     @property
     def static_energy(self):
@@ -325,7 +353,7 @@ class CloudParcel(object):
         return B
         
         
-    def CAPE_profile(self, environ, from_LCL=False):
+    def internal_E_profile(self, environ, from_LCL=False):
         Td = snd.dew_point_temperature(self.storage['q'][0], self.storage['p'][0])
         z_LCL = 122.0 * (self.storage['T'][0] - Td)
         T_LCL = self.storage['T'][0] - gval / cpa * z_LCL
@@ -396,7 +424,7 @@ class CloudParcel(object):
         return 122.0 * (self.storage['T'] - Td)
     
     def EL(self, environ):
-        p, CAPE = self.CAPE_profile(environ)
+        p, CAPE = self.internal_energy_profile(environ)
         p = p[np.argmin(np.abs(CAPE[10:])) + 10]
         
         ilow = np.argwhere(self.pressure >= p)[-1,0]
@@ -406,6 +434,11 @@ class CloudParcel(object):
         f = (self.storage['p'][iupp] - p) / (p - self.storage['p'][ilow])
         f = 1. / (f + 1)
         return self.storage['z'][iupp] ** f * self.storage['z'][ilow] ** (1 - f)
+    
+    def CAPE(self, environ):
+        CAPE = self.internal_E_profile(environ, from_LCL=True)[1]
+        return np.max(CAPE)
+        
     
     
     @property
@@ -493,10 +526,12 @@ def test_model_stability(dt=0.5):
     parcels = [CloudParcel(T0 = sounding.surface_temperature + 1.,
                          q0 = 0.02,
                          mix_len=0.0, w0=0.0, method=method) 
-               for method in methods]   
+               for method in methods]  
+    DWM = WaterManager(WaterManager.tanh_vapour_flow, WaterManager.precip_fixed_rate)
+    
     f, ax = plt.subplots(1, 2, sharey=True, figsize=(9,6))
     for i, mstr, parcel in zip(range(3), methods, parcels):
-        parcel.run(dt, 10000, sounding, flux_func=CloudParcel.tanh_vapour_flow)
+        parcel.run(dt, 10000, sounding, WM=DWM)
         z = parcel.storage['z']
         zpeaki = find_peaks(z)[0]
         zpeaks = z[zpeaki] / z[zpeaki[0]]
@@ -521,22 +556,19 @@ def test_model_stability(dt=0.5):
     plt.show()
     
     
-def mixing_func(z):
-    starting_radius = 1000
-    return 0.2 / (0.1 * z + starting_radius)
-    
             
 if __name__ == "__main__":
     sounding = snd.Sounding(None, None)
-    #sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
-    sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72210, "10102018",utc12=False)
+    sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
+    #sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72210, "10102018",utc12=False)
     sounding.attach_ecmwf_field("./oct_2018_cp.nc", {'cp': 'rain'})
     
-    parcel = CloudParcel(T0 = sounding.surface_temperature + 3,
-                         q0 = sounding.surface_humidity,
-                         mix_len=1./10e3, w0=0.0, method='RK4')
+    parcel = CloudParcel(T0 = sounding.surface_temperature + 1,
+                         q0 = 0.02,
+                         mix_len=60e3, w0=0.0, method='RK4')
+    water_core = WaterManager(WaterManager.tanh_vapour_flow, WaterManager.precip_fixed_rate)
     
-    parcel.run(0.5, 6000, sounding, flux_func=CloudParcel.tanh_vapour_flow, pre_method='default')
+    parcel.run(0.5, 6000, sounding, WM=water_core)
 
 
     plt.plot(np.arange(6000) * 0.5, parcel.storage['z'])
@@ -544,10 +576,10 @@ if __name__ == "__main__":
     plt.show()
     
     f, ax = sounding.SkewT_logP(show=False)
-    ax.plot(parcel.storage['T'], parcel.pressure * 1e-2)
+    ax.plot(parcel.temperature, parcel.pressure * 1e-2)
     plt.show()
     
-   # p, CAPE = parcel.CAPE_profile(sounding)
+   # p, CAPE = parcel.internal_E_profile(sounding)
    # plt.plot(CAPE, p * 1e-2)
    # plt.xlim(CAPE.max() * 1.1, -100)
    # plt.ylim(p.max() * 1e-2, 1)
@@ -567,4 +599,5 @@ if __name__ == "__main__":
 #    plt.show()
     
 #    plt.plot(np.arange(6000) * 0.5, parcel.virtual_temperature)
-    plt.show()
+#    plt.show()
+    
