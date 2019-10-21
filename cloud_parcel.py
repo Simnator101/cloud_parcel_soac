@@ -35,7 +35,7 @@ def trial_lapse_rate(z):
     elif 1500.0 <= z < 10000.0:
         return -6.5e-3
     else:
-        return 5e-3
+        return 1e-3
 
 
 class CloudParcel(object):
@@ -306,14 +306,14 @@ class CloudParcel(object):
         return B
         
         
-    def CAPE_CIN_theoretic(self, environ):
+    def CAPE_profile(self, environ, from_LCL=False):
         Td = snd.dew_point_temperature(self.storage['q'][0], self.storage['p'][0])
         z_LCL = 122.0 * (self.storage['T'][0] - Td)
         T_LCL = self.storage['T'][0] - gval / cpa * z_LCL
         p_LCL = self.pressure[0] * (1 - gval / cpa / self.storage['T'][0] * z_LCL) ** (cpa / Rair)
         
         p_prof = np.linspace(p_LCL, 100, 10000)
-        T_prof = odeint(snd.moist_adiabatic_lapse_rate, T_LCL, p_prof)
+        T_prof = odeint(snd.moist_adiabatic_lapse_rate, T_LCL, p_prof).flatten()
         
         
         z_adiab = np.linspace(self.storage['z'][0], z_LCL, 100)
@@ -341,21 +341,13 @@ class CloudParcel(object):
                 Te_prof[i] = environ.temperature[iupp] ** f * environ.temperature[ilow] ** (1 - f)
                 
                 
-        B = -gval ** 2 / (1 + self.induced_mass) * p_prof / Rair / T_prof
+        B = -1.0 / (1.0 + self.induced_mass) * Rair * T_prof / p_prof
         B *= (T_prof - Te_prof) / Te_prof
         CAPE = np.zeros(B.size)
         for i in range(1, CAPE.size):
             CAPE[i] = np.trapz(B[:i], p_prof[:i])
             
-        plt.plot(CAPE, p_prof * 1e-2)
-        plt.grid()
-        plt.ylim(1e3, 0)
-        plt.show()
-        
-        
-        
-        
-        return p_prof, T_prof
+        return p_prof, CAPE
     
     @property
     def precipitation_total(self):
@@ -380,6 +372,19 @@ class CloudParcel(object):
         assert self.storage is not None, "No profile is available"
         Td = snd.dew_point_temperature(self.storage['q'][0], self.surf_p)      
         return 122.0 * (self.storage['T'] - Td)
+    
+    def EL(self, environ):
+        p, CAPE = self.CAPE_profile(environ)
+        p = p[np.argmin(np.abs(CAPE[10:])) + 10]
+        
+        ilow = np.argwhere(self.pressure >= p)[-1,0]
+        iupp = np.argwhere(self.pressure <= p)[0,0] 
+        if ilow == iupp:
+            return self.storage['z'][ilow]
+        f = (self.storage['p'][iupp] - p) / (p - self.storage['p'][ilow])
+        f = 1. / (f + 1)
+        return self.storage['z'][iupp] ** f * self.storage['z'][ilow] ** (1 - f)
+    
     
     @property
     def one_cycle(self):
@@ -412,28 +417,6 @@ class CloudParcel(object):
                 qe = environ.humidity[iupp] ** (1. / invf) * environ.humidity[ilow] ** (1 - 1. / invf)
             Td[i] -= Te * (1. + 0.608 * qe)
         return Td
-            
-    def EL(self, environ):
-        assert self.storage is not None, "No profile is available"
-        _tmp = self.one_cycle
-        T, p = _tmp['T'], _tmp['p']
-        Tsnd = environ.temperature
-        psnd = environ.pressure_profile()
-        
-        # Interpolate sounding space into profile space
-        
-        print(T.size, Tsnd.size)
-        Tsnd_map = np.empty(T.size)
-        for i, pv in enumerate(p):
-            ilow = np.argwhere(psnd >= pv)[-1,0]
-            iupp = np.argwhere(psnd <= pv)[0,0]
-            
-            if np.isclose(psnd[iupp], psnd[ilow]):
-                Tsnd_map[i] = Tsnd[ilow]
-            else:
-                invf = 1. + (np.log(psnd[iupp]) - np.log(pv)) / (np.log(pv) - np.log(psnd[ilow]))
-                Tsnd_map[i] = Tsnd[iupp] ** (1. / invf) * Tsnd[ilow] ** (1 - 1. / invf)
-        return (T - Tsnd_map) / Tsnd_map
         
         
     
@@ -525,7 +508,7 @@ if __name__ == "__main__":
     #sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72210, "10102018",utc12=False)
     sounding.attach_ecmwf_field("./oct_2018_cp.nc", {'cp': 'rain'})
     
-    parcel = CloudParcel(T0 = sounding.surface_temperature + 3,
+    parcel = CloudParcel(T0 = sounding.surface_temperature + 1,
                          q0 = 0.01,
                          mix_len=0./10e3, w0=0.0, method='RK4')
     
@@ -536,10 +519,8 @@ if __name__ == "__main__":
     plt.grid()
     plt.show()
     
-    pp, Tp = parcel.CAPE_CIN_theoretic(sounding)
     f, ax = sounding.SkewT_logP(show=False)
     ax.plot(parcel.storage['T'], parcel.pressure * 1e-2)
-    ax.plot(Tp, pp * 1e-2)
     plt.show()
     
     # Test Sections
