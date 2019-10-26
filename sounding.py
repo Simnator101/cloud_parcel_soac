@@ -25,7 +25,8 @@ gval = 9.81 # m / s^2
 Rideal = 8.31446261815324	# J / k / mol
 Rair = 287.058  # J / k / kg
 Rv = 461.5      # J / k / kg
-Lv = 2.5e6      # J / kg
+Lv = 2.501e6    # J / kg
+Li = 2.834e6    # J / kg
 cpa = 1004.0    # J / kg / K
 cpv = 716.0     # J / kg / K
 
@@ -33,6 +34,14 @@ cpv = 716.0     # J / kg / K
 def saturation_pressure(T):
     T0 = 273.16
     return 610.78 * np.exp(Lv / Rv / T0 * (T - T0) / T)
+
+def saturation_pice(T):
+    T0 = 273.16
+    return 611.20 * np.exp(Li / Rv / T0 * (T - T0) / T)
+
+def saturation_mixr(T, p):
+    es = saturation_pressure(T)
+    return es / p * Rair / Rv
 
 def dew_point_temperature(q, p):
     T0 = 273.16
@@ -43,6 +52,7 @@ def dew_point_temperature(q, p):
 def relative_humidity(qs, p, T):
     air_d = p / T / Rair
     return qs * air_d * Rv * T / saturation_pressure(T) * 100.0
+
 
 def moist_adiabatic_lapse_rate(T, p):
     qs = saturation_pressure(T) / p * Rair / Rv
@@ -203,19 +213,53 @@ class Sounding(object):
         self.__q = qhum 
         self.wyoming_info = WyomingSoundingInfo()
         
-    def from_lapse_rate(self, g_rate, zb, zt, nsamps, T0=300.0, q_f=lambda z: 1e-6):
+    def from_lapse_rate(self, g_rate, zb, zt, nsamps, T0=300.0, Td0=280.0, q_f=lambda z: 1e-6):
+        assert isinstance(g_rate(0.0), dict)
         self.__z = np.linspace(zb, zt, nsamps)
         self.__T = np.full(nsamps, T0)
         self.__q = np.zeros(nsamps)
+        self.__Td = np.full(nsamps, Td0)
         dz = np.diff(self.__z)[0]
+        
         for i, zv in enumerate(self.__z):
-            self.__T[i] = self.__T[i-1] + g_rate(zv) * dz
-            self.__q[i] = q_f(zv)
+            samp = g_rate(zv)
+            
+            self.__T[i] = self.__T[i-1] + samp['T'] * dz
+            self.__q[i] = samp['q'] * dz if 'q' in samp else q_f(zv)
+            self.__Td[i] = self.__Td[i-1] + samp['Td'] * dz if 'Td' in samp else 0.0
         self.__p = self.pressure_profile()
-        self.__Td = np.empty(nsamps)
-        for i in range(nsamps):
-            RH = relative_humidity(self.__q[i], self.__p[i], self.__T[i])
-            self.__Td[i] = self.dew_point_NOAA(self.__T[i], RH)
+        
+        if not 'Td' in g_rate(0.0):
+            for i in range(nsamps):
+                RH = relative_humidity(self.__q[i], self.__p[i], self.__T[i])
+                self.__Td[i] = self.dew_point_NOAA(self.__T[i], RH)
+        else:
+            res = map(lambda x : saturation_mixr(*x), zip(self.__Td, self.__p))
+            self.__q = np.array(list(res))
+                
+            
+    def from_profile_equation(self, prof_eq, zb, zt, nsamps):
+        assert callable(prof_eq)
+        assert isinstance(prof_eq(0.0), dict)
+        self.__z = np.linspace(zb, zt, nsamps)
+        self.__T = np.empty(nsamps)
+        self.__q = np.zeros(nsamps)
+        self.__Td = np.zeros(nsamps)
+        
+        for i, zv in enumerate(self.__z):
+            samp = prof_eq(zv)
+            self.__T[i] = samp['T']
+            self.__q[i] = samp['q'] if 'q' in samp else 1e-6
+            self.__Td[i] = samp['Td'] if 'Td' in samp else 100.0
+        self.__p = self.pressure_profile()
+        
+        if not 'Td' in prof_eq(0.0):
+            for i in range(nsamps):
+                RH = relative_humidity(self.__q[i], self.__p[i], self.__T[i])
+                self.__Td[i] = self.dew_point_NOAA(self.__T[i], RH)
+        else:
+            res = map(lambda x : saturation_mixr(*x), zip(self.__Td, self.__p))
+            self.__q = np.array(list(res))
             
             
     @staticmethod
@@ -769,12 +813,14 @@ class Sounding(object):
         
 if __name__ == "__main__":
     def trial_lapse_rate(z):
+        Tv = 0.0
         if 0.0 <= z < 100.0:
-            return -20.0e-3
+            Tv =  -20.0e-3
         elif 100.0 <= z < 800.0:
-            return -9.8e-3
+            Tv =  -9.8e-3
         else:
-            return 10e-3
+            Tv = 10e-3
+        return {'T' : Tv, 'q' : 0.0}
     
     # Trial Lapse rate
     snd = Sounding(None, None)
