@@ -32,24 +32,25 @@ def trial_lapse_rate(z):
     Tv = 0.0
     Td = 0.0
     if 0.0 <= z < 1500.0:
-        Tv = -10.0e-3
+        Tv = -9.8e-3
         Td = 1e-4
     elif 1500.0 <= z < 10000.0:
         Tv = -6.5e-3
         Td = -8e-3
     else:
         Tv = 1e-3
-        Td = -9.8e-4
+        Td = -1e-3
     return {'T' : Tv, 'Td' : Td}
 
     
 class WaterManager(object):
-    def __init__(self, condensation_fnc=None, rain_fnc=None):
+    def __init__(self, condensation_fnc=None, rain_fnc=None, mult=1.0):
         self.cf = condensation_fnc
         self.rf = rain_fnc
+        self._mult = mult
             
     def water_flux(self, wv, wl, wmax, dt):
-        return self.cf(wv, wl, wmax, dt) if self.cf is not None else 0.0
+        return self.cf(wv, wl, wmax, dt, mult=self._mult) if self.cf is not None else 0.0
     
     def rain_rate(self, wv, wl, wmax, dt):
         return self.rf(wv, wl, wmax, dt) if self.rf is not None else 0.0  
@@ -80,7 +81,7 @@ class WaterManager(object):
     
     # Default Functions
     @staticmethod
-    def tanh_vapour_flow(wv, wl, wmax, dt):
+    def tanh_vapour_flow(wv, wl, wmax, dt, **kwargs):
         v = -np.tanh(15.0 * (wv / wmax - 1.0)) * 0.2 * dt
         if v < 0.0:
             return wv * v
@@ -357,6 +358,10 @@ class CloudParcel(object):
     def static_moist_energy(self):
         return self.static_energy + self.storage['q'] * Lv
     
+    @property
+    def NT(self):
+        return len(self.storage['T'])
+    
     def _buoyancy(self, environ):
         assert self.storage is not None, "No profile is available"
         # We only take one whole cycle
@@ -519,7 +524,7 @@ def test_energy_budget(parcel):
     del t
 
     
-def test_water_budget(parcel):
+def test_water_budget(parcel, save_file=None, **kwargs):
     f, ax = plt.subplots()
     t = np.arange(len(parcel.storage['T'])) * parcel.dt
     
@@ -527,6 +532,7 @@ def test_water_budget(parcel):
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Water Concentration (g/kg)")
     ax.set_title("Water Stores")
+    ax.set_xlim(0.0, t.max())
     
     ax.plot(t, parcel.storage['q'] * 1e3, label='Water Vapour')
     ax.plot(t, parcel.storage['l'] * 1e3, label='Water Liquid')
@@ -537,10 +543,37 @@ def test_water_budget(parcel):
     
     plt.legend(bbox_to_anchor=(1,1))
     plt.show()
-    del t
-
+    if save_file is not None:
+        f.savefig(save_file, dpi=300, **kwargs)
     
-def test_model_stability(dt=0.5):
+    del t
+    
+def test_water_conservation(parcel, save_file=None, **kwargs):
+    f, ax = plt.subplots()
+    t = np.arange(parcel.NT) * parcel.dt
+    w0 = parcel.storage['q'][0] + parcel.storage['l'][0]
+    w0 += parcel.storage['mu_lq'][0] + parcel.storage['p_gkg'][0]
+    
+    qs = parcel.storage['q'] + parcel.storage['l'] -\
+         parcel.storage['mu_lq'] + parcel.storage['p_gkg']
+    qs -= w0
+    
+    ax.plot(t, qs * 1e18)
+    ax.grid()
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Water Leakge (fg/kg)")
+    ax.set_xlim(0, t.max())
+    ax.set_ylim(-20, 20)
+    
+    if save_file is not None:
+        f.savefig(save_file, dpi=300)
+    plt.show()
+    del t
+    
+    
+    
+    
+def test_model_stability(dt=0.5, save_file=None, **kwargs):
     from scipy.signal import find_peaks
     
     sounding = snd.Sounding(None, None)
@@ -552,7 +585,7 @@ def test_model_stability(dt=0.5):
                for method in methods]  
     DWM = WaterManager(WaterManager.tanh_vapour_flow, None)
     
-    f, ax = plt.subplots(1, 2, sharey=True, figsize=(9,6))
+    f, ax = plt.subplots(1, 2, sharey=True, figsize=(9,4))
     for i, mstr, parcel in zip(range(3), methods, parcels):
         parcel.run(dt, 10000, sounding, WM=DWM)
         z = parcel.storage['z']
@@ -574,11 +607,44 @@ def test_model_stability(dt=0.5):
     ax[0].set_xlim(500, dt * z.size)
     ax[1].set_xlim(500, dt * z.size)
     
-    plt.legend(bbox_to_anchor=(1,1))
+    ax[0].legend(methods)
     plt.tight_layout()
     plt.show()
     
+    if save_file is not None and type(save_file) is str:
+        f.savefig(save_file, **kwargs)
     
+def test_adiab_path(save_file=None, **kwargs):
+    sounding = snd.Sounding(None, None)
+    sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
+    
+    parcel = CloudParcel(T0 = sounding.surface_temperature + 1,
+                         q0 = 0.01,
+                         mix_len=np.inf, w0=0.0, method='RK4')
+    water_core = WaterManager(WaterManager.tanh_vapour_flow, None) 
+    parcel.run(0.5, 6800, sounding, WM=water_core)
+    zA = np.copy(parcel.storage['z'])
+    
+    water_core = WaterManager(WaterManager.step_vapour_flow, None) 
+    parcel.run(0.5, 6800, sounding, WM=water_core)
+    zB = np.copy(parcel.storage['z'])
+    
+    f, ax = plt.subplots()
+    ax.plot(np.arange(parcel.NT) * parcel.dt, zA * 1e-3, label='Hyperbolic Tangent Flow')
+    ax.plot(np.arange(parcel.NT) * parcel.dt, zB * 1e-3, '--', label='Step Flow')
+        
+    ax.plot([0.0, parcel.NT * parcel.dt], [0, 0], 'k--', alpha=0.4)
+    ax.plot([0.0, parcel.NT * parcel.dt],
+            [parcel.storage['z'].max() * 1e-3, 
+             parcel.storage['z'].max() * 1e-3], 'k--', alpha=0.4)
+    ax.grid()
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Height (km)")
+    ax.set_xlim(0, parcel.NT * parcel.dt)
+    plt.show()
+    
+    if save_file:
+        f.savefig(save_file, dpi=300, **kwargs)
     
             
 if __name__ == "__main__":    
@@ -588,14 +654,23 @@ if __name__ == "__main__":
     
     parcel = CloudParcel(T0 = sounding.surface_temperature + 1,
                          q0 = 0.01,
-                         mix_len=np.inf, w0=0.0, method='Euler')
-    water_core = WaterManager(WaterManager.tanh_vapour_flow, None)
+                         mix_len=np.inf, w0=0.0, method='RK4')
+    water_core = WaterManager(WaterManager.step_vapour_flow, None)
     
-    parcel.run(0.5, 1700, sounding, WM=water_core)
+    parcel.run(0.5, 1920, sounding, WM=water_core)
 
 
-    plt.plot(np.arange(1700) * 0.5, parcel.storage['z'])
-    plt.grid()
+    f, ax = plt.subplots()
+    ax.plot(np.arange(parcel.NT) * parcel.dt, parcel.storage['z'] * 1e-3)
+        
+    ax.plot([0.0, parcel.NT * parcel.dt], [0, 0], 'k--', alpha=0.4)
+    ax.plot([0.0, parcel.NT * parcel.dt],
+            [parcel.storage['z'].max() * 1e-3, 
+             parcel.storage['z'].max() * 1e-3], 'k--', alpha=0.4)
+    ax.grid()
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Height (km)")
+    ax.set_xlim(0, parcel.NT * parcel.dt)
     plt.show()
     
     f, ax = sounding.SkewT_logP(show=False)
@@ -611,7 +686,7 @@ if __name__ == "__main__":
     
     # Test Sections
 #    test_energy_budget(parcel)
-#    test_model_stability()
+#    test_model_stability(1.5, "./images/numericalmethods.pdf")
 #    test_water_budget(parcel)
 #    plt.plot(np.arange(6000) * 0.5,parcel.precip_rate)
 #    plt.grid()
