@@ -30,6 +30,7 @@ wdens = 997.0                   # kg / m ^ 3
 kinvis_air = 1.5e-5
 
 # Test Switches
+test_info_plots = False
 test_collision = False
 test_condensation = False
 test_model = True
@@ -169,9 +170,9 @@ def Long_colkernel(rc):
         for j in range(len(rc)):
             mfac = np.pi * (rc[i] + rc[j]) ** 2 * abs(vdt[i] - vdt[j])
             Ecol = 1.0
-            if rc[i] < 50.0:
-                ry = rc[i] * 1e-4
-                rx = rc[j] * 1e-4
+            if rc[i] < 5e-7:
+                ry = rc[i] * 1e2
+                rx = rc[j] * 1e2
                 Ecol = max(4.5e4 * ry * ry * (1 - 3e-4 / rx), 1e-3)
             K[i,j] = Ecol * mfac
     return K
@@ -250,7 +251,7 @@ def calc_bott_courant(r):
     return c, ima
 
 
-def collision_ql(r, gij, ck, c, ima, dt):
+def collision_ql(r, gij, ck, c, ima):
     """ Returns the mass distribution of water droplets after collisione has 
     been applied to them. Method was taken from Bott (1997)
     """
@@ -329,11 +330,12 @@ def run_collision_sim(g, r, NT, dt, kernel_type=Golovin_colkernel):
     assert NT > 0
     assert isinstance(r, (list, tuple, np.ndarray))
     
+
     c, ima = calc_bott_courant(r)
     ck = smooth_kernel(kernel_type, r, dt)
-    
+        
     for ni in range(NT):
-        g = collision_ql(r, g, ck, c, ima, dt)
+        g = collision_ql(r, g, ck, c, ima)
     return g
 
 class CCNParcel(object):
@@ -346,8 +348,9 @@ class CCNParcel(object):
         self.q  = np.array([q0])
         self.w  = np.array([w0])
         self.z  = np.array([z0])
+        self.p  = np.array([p0])
+        
         self.fl = np.array([np.zeros(bin_params[0])])
-        self.__p0 = p0
         self.__dt = 0.0
                 
         self.rbin = prdist(*bin_params)
@@ -360,19 +363,23 @@ class CCNParcel(object):
     @property
     def reduced_gravity(self):
         return gval / (1. + self.induced_mass)
+        
+    @property
+    def Zl(self):
+        dr = binwidth(self.rbin) * 1e3
+        D6 = np.power(self.rbin * 1e3, 6)
+        N = np.array(list(map(lambda v : v * dr * 1e-3, self.fl)))
+        Zv = map(lambda i : np.trapz(N[i] * D6), range(self.z.size))
+        return np.array(list(Zv))
+        
+    @property
+    def dBZl(self):
+        dBz = map(lambda v : 10 * np.log10(min(v, 1e-3)), self.Zl)
+        return np.array(list(dBz))
     
     @property
-    def p(self):
-        pv = np.full(self.T.size, self.__p0)
-        for i in range(1, pv.size):
-            trpv = np.trapz(1. / self.T[:i], self.z[:i])
-            pv[i] = self.__p0 * np.exp(-gval / Rair * trpv)
-        return pv
-    
-    @p.setter
-    def p(self, p0):
-        assert p0 > 0.0, "Surface pressure must be non-zero"
-        self.__p0 = p0
+    def raint_rate(self):
+        return np.power(self.Zl / 200., 1. / 1.6)
         
     def run(self, dt, NT, environ):
         assert isinstance(environ, snd.Sounding)
@@ -384,6 +391,7 @@ class CCNParcel(object):
         self.q  = np.full(NT, self.q[-1])
         self.w  = np.full(NT, self.w[-1])
         self.z  = np.full(NT, self.z[-1])
+        self.p  = np.full(NT, self.p[-1])
         self.fl = np.full((NT, self.fl.size), self.fl[-1])
         
         # Internal temp variables
@@ -391,9 +399,10 @@ class CCNParcel(object):
         smax = 0.0
         acc = self.reduced_gravity
         went = self.entrainment / (1. + self.induced_mass)
-        pe = environ.pressure_profile()
-        ze = environ.height
+        #pe = environ.pressure_profile()
+        #ze = environ.height
         dr = binwidth(self.rbin)
+        S = lambda q, T, p : q / snd.saturation_mixr(T,p) - 1.0
         
         # Kernel Calculation for Collision/Coalescence
         qlkern = smooth_kernel(self.qlkern_fnc, self.rbin, dt)
@@ -403,54 +412,60 @@ class CCNParcel(object):
         vent_ql = np.array(list(map(ventilation_coef, self.rbin)))
         
         self.__dt = dt
+        fdt = dt / 4.0
+        nft = int(dt // fdt)
+        
                 
         # Run simulation
-        for i in range(1, NT):
+        for i in range(NT - 1):
             # Grab state variable
-            Te = environ.sample(self.z[i-1])
-            qe = environ.sample_q(self.z[i-1])
-            wl = np.trapz(self.mbin * self.fl[i-1], self.rbin)
-            pf = np.interp(self.z[i-1], ze, pe)
-            qs = snd.saturation_mixr(self.T[i-1], pf)
-            S = self.q[i-1] / qs - 1.0
+            Te = environ.sample(self.z[i])
+            wl = np.trapz(self.mbin * self.fl[i], self.rbin)
+            Sc = S(self.q[i], self.T[i], self.p[i])
             
-            # Momentum Equation(s)
-            dw_dt  = acc * ((self.T[i-1] - Te) / Te - wl) 
-            dw_dt -= went * abs(self.w[i-1]) * self.w[i-1]
+            # Moment change
+            dw_dt = acc*((self.T[i]-Te)/Te-wl) - went*abs(self.w[i])*self.w[i]
+            self.w[i+1] = self.w[i] + dw_dt*dt
+            self.z[i+1] = self.z[i] + self.w[i+1] * dt
             
-            # Cloud Microphysics (Droplet Spectrum)
-            tmp_fl = self.fl[i-1] 
-            ## CCN
-            smax, dNCNN = activition_CCN(S,smax)
-            tmp_fl[0] = tmp_fl[0] + dNCNN / dr[0]
-            
-            
-            ## Collision/Coalesence
-            tmp_fl = conv_sd_to_g(tmp_fl, self.rbin)
-            tmp_fl = collision_ql(self.rbin, tmp_fl, qlkern, qlc, qlima, dt)
-            tmp_fl = conv_g_to_sd(tmp_fl, self.rbin)
-            
-            ## Condensation
-            drl_dt = vent_ql * 1e-10 * S / self.rbin
-            cr_ql = drl_dt * dt / dr
-            tmp_fl2 = adv2p(np.copy(tmp_fl), cr_ql)      
-            eps1 = np.trapz(self.mbin * (tmp_fl2 - tmp_fl) / dt, self.rbin)
-            
-            ## Entrainment of liquid water
-            tmp_fl2 = tmp_fl2 - self.entrainment*tmp_fl2*abs(self.w[i-1])*dt
+            # Pressure State Equation
+            _dz = self.z[i+1] - self.z[i]
+            self.p[i+1] = self.p[i] - self.p[i] * gval / Rair / self.T[i]*_dz
             
             # Thermodynamic Equations
-            dT_dt  = -gval / cpa * self.w[i-1] + Lv / cpa * eps1
-            dT_dt -= self.entrainment * (self.T[i-1] - Te) * abs(self.w[i-1])
-            dq_dt = -eps1 - self.entrainment*(self.q[i-1]-qe)*abs(self.w[i-1])
+            Te = environ.sample(self.z[i+1])
+            qe = environ.sample_q(self.z[i+1])
+            self.T[i+1] = self.T[i] - gval/cpa*self.w[i+1]*dt
+            self.T[i+1] = self.T[i+1] - self.entrainment*(self.T[i+1] - Te)*\
+                                        abs(self.w[i+1])*dt                           
+            self.q[i+1] = self.q[i] - self.entrainment*(self.q[i]-qe)*\
+                                                        abs(self.w[i+1])*dt
             
-            # Update
-            self.w[i] = self.w[i-1] + dw_dt * dt
-            self.fl[i] = tmp_fl2
-            self.T[i] = self.T[i-1] + dT_dt * dt
-            self.q[i] = self.q[i-1] + dq_dt * dt
-            self.z[i] = self.z[i-1] + self.w[i-1] * dt
+            # Cloud Microphysics
+            ## Activation
+            smax, dNCCN = activition_CCN(Sc, smax)
+            dNCCN = np.pad([dNCCN], (0, len(dr) - 1), 'constant')
+            self.fl[i+1] = self.fl[i] + dNCCN / dr
+            ## Coalesence
+            tmp_g = conv_sd_to_g(self.fl[i+1], self.rbin)
+            tmp_g = collision_ql(self.rbin, tmp_g, qlkern, qlc, qlima)
+            self.fl[i+1] = conv_g_to_sd(tmp_g, self.rbin)
+            ## Advection/Condensation
+            #self.q[i+1], self.T[i+1] = self.q[i], self.T[i]
+            for j in range(nft):
+                Sc = S(self.q[i+1], self.T[i+1], self.p[i+1])
+                dr_dt = vent_ql * 1e-10 * Sc / self.rbin
+                cc = dr_dt * fdt / dr
+                
+                cr = -np.gradient(dr_dt * self.fl[i+1], self.rbin)
+                cr = np.trapz(self.mbin * cr, self.rbin)
+                
+                self.fl[i+1] = adv2p(self.fl[i+1], cc)
+                self.q[i+1] = self.q[i+1] - cr * fdt
+                self.T[i+1] = self.T[i+1] + Lv / cpa * cr * fdt
+                
             
+            # Update Progress Bar
             prog = (i + 1.) / float(NT)
             nbwidth = int(50 * prog)
             if nbwidth > bwidth:
@@ -501,53 +516,53 @@ class CCNParcel(object):
     
         
 
-
-# Plot Distributions
-f,ax = plt.subplots()
-ax.semilogx(prdist(69,  0.25, 0.055)  * 1e6, [1] * 69, 'x')
-ax.semilogx(prdist(120, 0.125, 0.032) * 1e6, [2] * 120, 'x')
-ax.semilogx(prdist(200, 0.075, 0.019) * 1e6, [3] * 200, 'x')
-ax.semilogx(prdist(300, 0.05, 0.0125) * 1e6, [4] * 300, 'x')
-
-ax.semilogx(prdist(40,  1.0, 1.0, mode='massdist') * 1e6, [6] * 40, 'x')
-ax.semilogx(prdist(80, 0.5, 2.0, mode='massdist') * 1e6, [7] * 80, 'x')
-ax.semilogx(prdist(160, 0.25, 4.0, mode='massdist') * 1e6, [8] * 160, 'x')
-ax.semilogx(prdist(320, 0.125, 8.0, mode='massdist') * 1e6, [9] * 320, 'x')
-
-ax.text(1000., 8.4, "N=320") 
-ax.text(1000., 7.4, "N=160")
-ax.text(1000., 6.4, "N=80")
-ax.text(1000., 5.4, "N=40")
-
-ax.text(1000., 3.4, "N=300")
-ax.text(1000., 2.4, "N=200")
-ax.text(1000., 1.4, "N=120")
-ax.text(1000., 0.4, "N=69")
-
-
-ax.set_xlabel("Radius ($\\mu$m)")
-ax.xaxis.set_major_formatter(ScalarFormatter())
-ax.xaxis.set_minor_formatter(NullFormatter())
-ax.set_yticks([])
-ax.grid()
-ax.set_ylim([0, 10])
-plt.show()
-
-# Plot Collision Kernel
-R = prdist(80, 0.5, 2, mode='massdist')
-XV, YV = np.meshgrid(R * 1e6, R * 1e6) 
-f, ax = plt.subplots()
-cb = ax.contourf(XV, YV, Golovin_colkernel(R) * 1e6,
-                 levels=[0., 10, 50, 100, 300, 500, 1000,1500], extend='max')
-ax.set_yscale('log')
-ax.set_xscale('log')
-ax.xaxis.set_major_formatter(ScalarFormatter())
-ax.yaxis.set_major_formatter(ScalarFormatter())
-ax.set_xlabel("$r_x$ ($\\mu$m)")
-ax.set_ylabel("$r_y$ ($\\mu$m)")
-cax = plt.colorbar(cb)
-cax.set_label("cm$^3$/s")
-plt.show()
+if test_info_plots:
+    # Plot Distributions
+    f,ax = plt.subplots()
+    ax.semilogx(prdist(69,  0.25, 0.055)  * 1e6, [1] * 69, 'x')
+    ax.semilogx(prdist(120, 0.125, 0.032) * 1e6, [2] * 120, 'x')
+    ax.semilogx(prdist(200, 0.075, 0.019) * 1e6, [3] * 200, 'x')
+    ax.semilogx(prdist(300, 0.05, 0.0125) * 1e6, [4] * 300, 'x')
+    
+    ax.semilogx(prdist(40,  1.0, 1.0, mode='massdist') * 1e6, [6] * 40, 'x')
+    ax.semilogx(prdist(80, 0.5, 2.0, mode='massdist') * 1e6, [7] * 80, 'x')
+    ax.semilogx(prdist(160, 0.25, 4.0, mode='massdist') * 1e6, [8] * 160, 'x')
+    ax.semilogx(prdist(320, 0.125, 8.0, mode='massdist') * 1e6, [9] * 320, 'x')
+    
+    ax.text(1000., 8.4, "N=320") 
+    ax.text(1000., 7.4, "N=160")
+    ax.text(1000., 6.4, "N=80")
+    ax.text(1000., 5.4, "N=40")
+    
+    ax.text(1000., 3.4, "N=300")
+    ax.text(1000., 2.4, "N=200")
+    ax.text(1000., 1.4, "N=120")
+    ax.text(1000., 0.4, "N=69")
+    
+    
+    ax.set_xlabel("Radius ($\\mu$m)")
+    ax.xaxis.set_major_formatter(ScalarFormatter())
+    ax.xaxis.set_minor_formatter(NullFormatter())
+    ax.set_yticks([])
+    ax.grid()
+    ax.set_ylim([0, 10])
+    plt.show()
+    
+    # Plot Collision Kernel
+    R = prdist(80, 0.5, 2, mode='massdist')
+    XV, YV = np.meshgrid(R * 1e6, R * 1e6) 
+    f, ax = plt.subplots()
+    cb = ax.contourf(XV, YV, Long_colkernel(R) * 1e6,
+                     levels=[0., 10, 50, 100, 300, 500, 1000,1500], extend='max')
+    ax.set_yscale('log')
+    ax.set_xscale('log')
+    ax.xaxis.set_major_formatter(ScalarFormatter())
+    ax.yaxis.set_major_formatter(ScalarFormatter())
+    ax.set_xlabel("$r_x$ ($\\mu$m)")
+    ax.set_ylabel("$r_y$ ($\\mu$m)")
+    cax = plt.colorbar(cb)
+    cax.set_label("cm$^3$/s")
+    plt.show()
 
 if test_model:
     def trial_lapse_rate(z):
@@ -568,8 +583,9 @@ if test_model:
     
     # Setup sim
     parcel = CCNParcel(T0=sounding.surface_temperature + 1.0,
-                       q0=0.01, mix_len=np.inf)
-    parcel.run(0.02, 42500, sounding)
+                       q0=0.01, mix_len=np.inf, ql_kernel=Long_colkernel)
+    parcel.run(0.1, 9600, sounding)
+    #parcel.write_to_netCDF("./ascent_long_kernel.nc")
     
     f, ax = sounding.SkewT_logP(show=False)
     ax.plot(parcel.T, parcel.p * 1e-2)
@@ -636,8 +652,9 @@ if test_condensation:
     Lc = 1e-3 # Cloud liquid content in kg / m^-3
     ql = 0.020 # Water Vapour in the cloud
     T,p = (295.0, 1e5) # Environmental Temperature and pressure
-    dt = 0.02
-    nt = 500
+    dt = 0.5
+    nt = 20
+    centered = True
     
     ql = np.full(nt * 2, ql)
     mcr = np.array(list(map(droplet_mass, R)))
@@ -646,18 +663,40 @@ if test_condensation:
     dr = binwidth(R)
     vent_c = np.array([ventilation_coef(rv) for rv in R])
     
-    # Run simulation
-    for i in range(1, 2 * nt):
-        if i == nt:
-            T = 298.15 # At this temperature 0.02 kg/kg is the sat. mix. ratio
-        
-        dr_dt = vent_c * 1e-10 * (ql[i-1] / satmix_r(T,p) - 1.0) / R
+    if centered:
+        # Calculate First step
+        dr_dt = vent_c * 1e-10 * (ql[0] / satmix_r(T,p) - 1.0) / R
         courn = dr_dt * dt / dr
-        
-        sd[i] = adv2p(np.copy(sd[i-1]), courn)
-        cond_t = (sd[i] - sd[i-1]) / dt
+        sd[1] = adv2p(np.copy(sd[0]), courn)
+        cond_t = (sd[1] - sd[0]) / dt
         Cr = np.trapz(mcr * cond_t, R)
-        ql[i] = ql[i-1] - Cr * dt
+        ql[1] = ql[0] - Cr * dt
+        
+        # Run simulation
+        for i in range(1, 2 * nt - 1):
+            if i - 1 == nt:
+                T = 298.15 # At this temperature 0.02 kg/kg is the sat. mix.rat
+            
+            dr_dt = vent_c * 1e-10 * (ql[i-1] / satmix_r(T,p) - 1.0) / R
+            courn = dr_dt * 2 * dt / dr
+            
+            sd[i+1] = adv2p(np.copy(sd[i-1]), courn)
+            cond_t = (sd[i+1] - sd[i-1]) / dt / 2
+            Cr = np.trapz(mcr * cond_t, R)
+            ql[i+1] = ql[i-1] - Cr * dt * 2
+            
+    else:
+        for i in range(1, 2 * nt):
+            if i == nt:
+                T = 298.15 # At this temperature 0.02 kg/kg is the sat. mix.rat
+            
+            dr_dt = vent_c * 1e-10 * (ql[i-1] / satmix_r(T,p) - 1.0) / R
+            courn = dr_dt * dt / dr
+            
+            sd[i] = adv2p(np.copy(sd[i-1]), courn)
+            cond_t = (sd[i] - sd[i-1]) / dt
+            Cr = np.trapz(mcr * cond_t, R)
+            ql[i] = ql[i-1] - Cr * dt 
     
     f,ax = plt.subplots()
     ax.semilogx(R * 1e6, sd[0], 'k--', alpha=0.7)
