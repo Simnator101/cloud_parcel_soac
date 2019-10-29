@@ -16,6 +16,8 @@ from netCDF4 import Dataset
 from advection_mod import adv2p
 import sounding as snd
 
+__all__ = ['CCNParcel']
+
 
 # constants
 gval = 9.81                     # m / s^2
@@ -33,7 +35,7 @@ kinvis_air = 1.5e-5
 test_info_plots = False
 test_collision = False
 test_condensation = False
-test_model = True
+test_model = False
 
  
 
@@ -349,6 +351,7 @@ class CCNParcel(object):
         self.w  = np.array([w0])
         self.z  = np.array([z0])
         self.p  = np.array([p0])
+        self.pr = np.array([0.0])
         
         self.fl = np.array([np.zeros(bin_params[0])])
         self.__dt = 0.0
@@ -392,6 +395,7 @@ class CCNParcel(object):
         self.w  = np.full(NT, self.w[-1])
         self.z  = np.full(NT, self.z[-1])
         self.p  = np.full(NT, self.p[-1])
+        self.pr = np.full(NT, self.pr[-1])
         self.fl = np.full((NT, self.fl.size), self.fl[-1])
         
         # Internal temp variables
@@ -463,7 +467,6 @@ class CCNParcel(object):
                 self.fl[i+1] = adv2p(self.fl[i+1], cc)
                 self.q[i+1] = self.q[i+1] - cr * fdt
                 self.T[i+1] = self.T[i+1] + Lv / cpa * cr * fdt
-                
             
             # Update Progress Bar
             prog = (i + 1.) / float(NT)
@@ -516,7 +519,7 @@ class CCNParcel(object):
     
         
 
-if test_info_plots:
+if test_info_plots and __name__ == '__main__':
     # Plot Distributions
     f,ax = plt.subplots()
     ax.semilogx(prdist(69,  0.25, 0.055)  * 1e6, [1] * 69, 'x')
@@ -564,7 +567,7 @@ if test_info_plots:
     cax.set_label("cm$^3$/s")
     plt.show()
 
-if test_model:
+if test_model and __name__ == '__main__':
     def trial_lapse_rate(z):
         Tv = 0.0
         Td = 0.0
@@ -592,7 +595,7 @@ if test_model:
     plt.show()
 
 # Test  Collision Growth Module
-if test_collision:
+if test_collision and __name__ == '__main__':
     R = prdist(80, 0.0, 2.0, mode='massmult')
     rm = 1e-5 # In metres
     Lc = 1e-3 # Cloud liquid content in kg / m^-3
@@ -641,7 +644,7 @@ if test_collision:
     f.savefig("./water_droplet_dist_growth.png", dpi=300)
     plt.show()
 
-if test_condensation:
+if test_condensation and __name__ == '__main__':
     def satmix_r(T,p):
         es = 611.2 * np.exp(Lv / Rv / 273.16  * (1 - 273.16 / T))
         return es / p * Rair / Rv
