@@ -230,7 +230,7 @@ if __name__ == '__main__':
     c = v * dt / dx
     
     for i in range(nt):
-        ya = adv4p(ya, c, True)
+        ya = adv2p(ya, c, True)
         
     # Fourier Analysis
     fy, fya = (2 / y.size * np.abs(np.fft.fft(y)),

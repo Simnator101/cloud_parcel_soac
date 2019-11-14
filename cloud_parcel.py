@@ -23,9 +23,9 @@ Rv = 461.5                      # J / k / kg
 cpa = 1004.0                    # J / kg / K
 cpv = 716.0                     # J / kg / K
 Lv = 2.5e6                      # J / kg
-hydrometeor_r = 5e-3            # 1 / s
+hydrometeor_r = 4e-3            # 1 / s
 water_std_density = 997.0       # kg / m ^ 3
-l_rain_limit = 0.01            # kg / kg
+l_rain_limit = 0.005           # kg / kg
 air_kin_visc = 1.5e-5
 
 def trial_lapse_rate(z):
@@ -60,24 +60,24 @@ class WaterManager(object):
             delattr(self, '__storage')
 
     def update(self, wv, wl, wmax, dt): 
-        if not hasattr(self, "__storage"):
+        if not hasattr(self, "_storage"):
             rr = self.rain_rate(wv, wl, wmax, dt) 
             cr = self.water_flux(wv, wl, wmax, dt) 
-            self.__storage = {'rain_r' : np.array([rr]),
+            self._storage = {'rain_r' : np.array([rr]),
                               'cond_r' : np.array([cr])}
         else:
             rr = self.rain_rate(wv, wl, wmax, dt) 
             cr = self.water_flux(wv, wl, wmax, dt) 
-            self.__storage['rain_r'] = np.r_[self.__storage['rain_r'], rr]
-            self.__storage['cond_r'] = np.r_[self.__storage['cond_r'], cr]
+            self._storage['rain_r'] = np.r_[self._storage['rain_r'], rr]
+            self._storage['cond_r'] = np.r_[self._storage['cond_r'], cr]
             
     @property
     def get_rain_rate(self):
-        return self.__storage['rain_r']
+        return self._storage['rain_r']
     
     @property
     def get_condensation_rate(self):
-        return self.__storage['cond_r']
+        return self._storage['cond_r']
     
     # Default Functions
     @staticmethod
@@ -174,8 +174,8 @@ class CloudParcel(object):
         
         def mu_lq_eval(_val):
             w, wv, wl, z = _val
-            res = -self.__mu * (wv - environ.sample_q(z)) *  abs(w)
-            res -= self.__mu * wl * abs(w)
+            res = self.__mu * (wv - environ.sample_q(z)) *  abs(w)
+            res += self.__mu * wl * abs(w)
             return res
         
         
@@ -300,7 +300,7 @@ class CloudParcel(object):
         
         #self.precip_rate = map(lambda v: WM.rain_rate(v[0], v[1], 0.0, dt), zip(q, l))
         #self.precip_rate = np.array(list(self.precip_rate))
-        self.precip_rate = WM.get_rain_rate
+        self.precip_rate = np.r_[WM.get_rain_rate, 0.0]
         self.storage = {'T' : T,
                         'w' : w,
                         'z' : z,
@@ -436,13 +436,13 @@ class CloudParcel(object):
         layer_thck = np.abs(np.gradient(self.storage['z']))
         precip_a = np.trapz(self.precip_rate * air_d * layer_thck, dx=self.dt)
         
-        peak_i = np.argmax(self.precip_rate)
-        max_p = self.precip_rate[peak_i]
-        right_i = np.argwhere(self.precip_rate / max_p <= 0.05).flatten()
-        right_i = list(filter(lambda i : i > peak_i, right_i))[0]
-        t_ascent = self.dt * right_i
+        #peak_i = np.argmax(self.precip_rate)
+        #max_p = self.precip_rate[peak_i]
+        #right_i = np.argwhere(self.precip_rate / max_p <= 0.05).flatten()
+        #right_i = list(filter(lambda i : i > peak_i, right_i))[0]
+        #t_ascent = self.dt * right_i
         
-        return precip_a / water_std_density * 86400. / t_ascent
+        return precip_a / water_std_density #* 86400.# / t_ascent
         
     
     @property
@@ -529,8 +529,8 @@ def test_water_budget(parcel, save_file=None, **kwargs):
     t = np.arange(len(parcel.storage['T'])) * parcel.dt
     
     ax.grid(True)
-    ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Water Concentration (g/kg)")
+    ax.set_xlabel("Time (s)", fontsize=12)
+    ax.set_ylabel("Water Concentration (g/kg)", fontsize=12)
     ax.set_title("Water Stores")
     ax.set_xlim(0.0, t.max())
     
@@ -538,13 +538,13 @@ def test_water_budget(parcel, save_file=None, **kwargs):
     ax.plot(t, parcel.storage['l'] * 1e3, label='Water Liquid')
     ax.plot(t, parcel.storage['mu_lq'] * 1e3, label='Mixed Out/In Water')
     ax.plot(t, parcel.storage['p_gkg'] * 1e3, label='Precipitation')
-    ax.plot(t, (parcel.storage['q'] + parcel.storage['l'] - parcel.storage['mu_lq'] + parcel.storage['p_gkg'] ) * 1e3,
+    ax.plot(t, (parcel.storage['q'] + parcel.storage['l'] + parcel.storage['mu_lq'] + parcel.storage['p_gkg'] ) * 1e3,
             label='Water Budget')
     
-    plt.legend(bbox_to_anchor=(1,1))
+    leg = plt.legend(bbox_to_anchor=(1,1))
     plt.show()
     if save_file is not None:
-        f.savefig(save_file, dpi=300, **kwargs)
+        f.savefig(save_file, dpi=300, bbox_extra_artists=(leg,), bbox_inches='tight',**kwargs)
     
     del t
     
@@ -563,7 +563,7 @@ def test_water_conservation(parcel, save_file=None, **kwargs):
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Water Leakge (fg/kg)")
     ax.set_xlim(0, t.max())
-    ax.set_ylim(-20, 20)
+    ax.set_ylim(-100, 100)
     
     if save_file is not None:
         f.savefig(save_file, dpi=300)
@@ -629,9 +629,14 @@ def test_adiab_path(save_file=None, **kwargs):
     parcel.run(0.5, 6800, sounding, WM=water_core)
     zB = np.copy(parcel.storage['z'])
     
+    water_core = WaterManager(WaterManager.step_vapour_flow, None, mult=0.5) 
+    parcel.run(0.5, 6800, sounding, WM=water_core)
+    zC = np.copy(parcel.storage['z'])
+    
     f, ax = plt.subplots()
     ax.plot(np.arange(parcel.NT) * parcel.dt, zA * 1e-3, label='Hyperbolic Tangent Flow')
     ax.plot(np.arange(parcel.NT) * parcel.dt, zB * 1e-3, '--', label='Step Flow')
+    ax.plot(np.arange(parcel.NT) * parcel.dt, zC * 1e-3, ':', label='Dampened Step Flow')
         
     ax.plot([0.0, parcel.NT * parcel.dt], [0, 0], 'k--', alpha=0.4)
     ax.plot([0.0, parcel.NT * parcel.dt],
@@ -645,21 +650,58 @@ def test_adiab_path(save_file=None, **kwargs):
     
     if save_file:
         f.savefig(save_file, dpi=300, **kwargs)
+        
+def test_precip_modules(save_file=None, **kwargs):
+    sounding = snd.Sounding(None, None)
+    sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
+    parcel = CloudParcel(T0 = sounding.surface_temperature + 1,
+                         q0 = sounding.surface_humidity,
+                         mix_len=np.inf, w0=0.0, method='RK4')
+    
+    
+    w1 = WaterManager(WaterManager.tanh_vapour_flow, WaterManager.precip_fixed_rate)
+    w2 = WaterManager(WaterManager.tanh_vapour_flow, WaterManager.precip_fixed_amount)
+    w3 = WaterManager(WaterManager.tanh_vapour_flow, WaterManager.precip_tanh_rate)
+    
+    parcel.run(0.5, 7000, sounding, WM=w1)
+    p1 = parcel.storage['p_gkg'] * 1e3
+    
+    parcel.run(0.5, 7000, sounding, WM=w2)
+    p2 = parcel.storage['p_gkg'] * 1e3
+    
+    parcel.run(0.5, 7000, sounding, WM=w3)
+    p3 = parcel.storage['p_gkg'] * 1e3
+    
+    
+    f, ax = plt.subplots()
+    ax.plot(np.arange(parcel.NT) * parcel.dt, p1, ':')
+    ax.plot(np.arange(parcel.NT) * parcel.dt, p2, '-')
+    ax.plot(np.arange(parcel.NT) * parcel.dt, p3, '--')
+    
+    ax.grid()
+    ax.set_xlabel("Time (s)")
+    ax.set_ylabel("Precipitated Water (g/kg)")
+    ax.set_xlim(0, parcel.NT * parcel.dt)
+    
+    if save_file is not None:
+        f.savefig(save_file, dpi=300, **kwargs)
+    plt.show()
     
             
 if __name__ == "__main__":    
     sounding = snd.Sounding(None, None)
-    sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
+#    sounding.from_lapse_rate(trial_lapse_rate, 0, 20e3, 10000)
+    sounding.from_wyoming_httpd(snd.SoundingRegion.EUROPE, '06260', '28072014')
 #    sounding.from_wyoming_httpd(snd.SoundingRegion.NORTH_AMERICA, 72210, "10102018",utc12=False)
     
-    parcel = CloudParcel(T0 = sounding.surface_temperature + 1,
-                         q0 = 0.01,
-                         mix_len=np.inf, w0=0.0, method='RK4')
-    water_core = WaterManager(WaterManager.step_vapour_flow, None)
+    parcel = CloudParcel(T0 = sounding.surface_temperature + 2,
+                         q0 = sounding.surface_humidity,
+                         mix_len=8e3, w0=0.0, method='RK4')
+    water_core = WaterManager(WaterManager.tanh_vapour_flow,WaterManager.precip_tanh_rate)
     
-    parcel.run(0.5, 1920, sounding, WM=water_core)
+    parcel.run(0.5, 1900, sounding, WM=water_core)
 
-
+    
     f, ax = plt.subplots()
     ax.plot(np.arange(parcel.NT) * parcel.dt, parcel.storage['z'] * 1e-3)
         
@@ -673,8 +715,9 @@ if __name__ == "__main__":
     ax.set_xlim(0, parcel.NT * parcel.dt)
     plt.show()
     
+    
     f, ax = sounding.SkewT_logP(show=False)
-    ax.plot(parcel.temperature, parcel.pressure * 1e-2)
+    ax.plot(parcel.temperature, parcel.pressure * 1e-2)    
     plt.show()
     
    # p, CAPE = parcel.internal_E_profile(sounding)

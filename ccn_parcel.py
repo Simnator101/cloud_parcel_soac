@@ -16,7 +16,7 @@ from netCDF4 import Dataset
 from advection_mod import adv2p
 import sounding as snd
 
-__all__ = ['CCNParcel']
+__all__ = ['CCNParcel', 'conv_sd_to_g', 'conv_g_to_sd']
 
 
 # constants
@@ -33,7 +33,7 @@ kinvis_air = 1.5e-5
 
 # Test Switches
 test_info_plots = False
-test_collision = False
+test_collision = True
 test_condensation = False
 test_model = False
 
@@ -263,7 +263,7 @@ def collision_ql(r, gij, ck, c, ima):
     mcr = list(map(droplet_mass, r))
     
     # Check if cell i has got anything of value
-    for i in np.arange(N - 1):
+    for i in range(N - 1):
         i0 = i
         if gij[i] > gmin:
             break;
@@ -273,8 +273,8 @@ def collision_ql(r, gij, ck, c, ima):
         if gij[j] > gmin: 
             break
     
-    for i in np.arange(i0, il+1):
-        for j in np.arange(i, il+1):
+    for i in np.arange(i0, il):
+        for j in np.arange(i, il):
             k = ima[i,j]
             kp = k + 1
             m0 = ck[i,j] * gij[i] * gij[j]
@@ -289,9 +289,13 @@ def collision_ql(r, gij, ck, c, ima):
             gk = gij[k] + gsk
             
             if gk > gmin:
-                m1 = np.log(gij[kp] / gk + 1e-60)
+                m1 = np.log(max(gij[kp] / gk, 1e-60))
                 flux = gsk / m1 * (np.exp(0.5 * m1) - np.exp(m1 * (0.5 - c[i,j])))
                 flux = min(flux, gk)
+                
+                if np.isnan(flux):
+                    print(gij[kp],gk,m1,i,j,k)
+                
                 gij[k]  = gk - flux
                 gij[kp] = gij[kp] + flux
     
@@ -444,7 +448,7 @@ class CCNParcel(object):
                                         abs(self.w[i+1])*dt                           
             self.q[i+1] = self.q[i] - self.entrainment*(self.q[i]-qe)*\
                                                         abs(self.w[i+1])*dt
-            
+                                                                    
             # Cloud Microphysics
             ## Activation
             smax, dNCCN = activition_CCN(Sc, smax)
@@ -455,18 +459,23 @@ class CCNParcel(object):
             tmp_g = collision_ql(self.rbin, tmp_g, qlkern, qlc, qlima)
             self.fl[i+1] = conv_g_to_sd(tmp_g, self.rbin)
             ## Advection/Condensation
-            #self.q[i+1], self.T[i+1] = self.q[i], self.T[i]
             for j in range(nft):
                 Sc = S(self.q[i+1], self.T[i+1], self.p[i+1])
                 dr_dt = vent_ql * 1e-10 * Sc / self.rbin
                 cc = dr_dt * fdt / dr
                 
-                cr = -np.gradient(dr_dt * self.fl[i+1], self.rbin)
-                cr = np.trapz(self.mbin * cr, self.rbin)
+                #cr = -np.gradient(dr_dt * self.fl[i+1], self.rbin)
+                #cr = np.trapz(self.mbin * cr, self.rbin)
                 
-                self.fl[i+1] = adv2p(self.fl[i+1], cc)
+                tmp_f = adv2p(np.copy(self.fl[i+1]), cc)
+                cr = self.mbin * (tmp_f - self.fl[i+1]) / fdt
+                cr = np.trapz(cr, self.rbin)
+                
+                
                 self.q[i+1] = self.q[i+1] - cr * fdt
                 self.T[i+1] = self.T[i+1] + Lv / cpa * cr * fdt
+                self.fl[i+1] = list(map(lambda v : max(v, 0.0), tmp_f))
+                
             
             # Update Progress Bar
             prog = (i + 1.) / float(NT)
@@ -492,6 +501,7 @@ class CCNParcel(object):
         
         vtim = data.createVariable("time", "f4", ("time",))
         vrbn = data.createVariable("rbin", "f8", ("rbin",))
+        vmbn = data.createVariable("mbin", "f8", ("rbin",))
         vT = data.createVariable("T", "f4", ("time",))
         vq = data.createVariable("q", "f4", ("time",))
         vw = data.createVariable("w", "f4", ("time",))
@@ -500,6 +510,7 @@ class CCNParcel(object):
         
         vtim.units = 'seconds'
         vrbn.units = 'meters'
+        vmbn.units = 'kg'
         vT.units = 'Kelvin'
         vq.units = 'kg kg**-1'
         vw.units = 'm s**-1'
@@ -508,11 +519,12 @@ class CCNParcel(object):
             
         data['time'][:] = np.arange(self.T.size) * self.__dt
         data['rbin'][:] = self.rbin
+        data['mbin'][:] = self.mbin
         data['T'][:] = self.T
         data['q'][:] = self.q
         data['w'][:] = self.w
         data['z'][:] = self.z
-        data['fl'][:] = conv_sd_to_g(self.fl, self.rbin)
+        data['fl'][:] = self.fl
         
         data.close()
             
@@ -587,7 +599,7 @@ if test_model and __name__ == '__main__':
     # Setup sim
     parcel = CCNParcel(T0=sounding.surface_temperature + 1.0,
                        q0=0.01, mix_len=np.inf, ql_kernel=Long_colkernel)
-    parcel.run(0.1, 9600, sounding)
+    parcel.run(0.2, 4500, sounding)
     #parcel.write_to_netCDF("./ascent_long_kernel.nc")
     
     f, ax = sounding.SkewT_logP(show=False)
@@ -596,10 +608,12 @@ if test_model and __name__ == '__main__':
 
 # Test  Collision Growth Module
 if test_collision and __name__ == '__main__':
-    R = prdist(80, 0.0, 2.0, mode='massmult')
+    R = prdist(69, 0.25, 0.055, mode='linexp')
     rm = 1e-5 # In metres
     Lc = 1e-3 # Cloud liquid content in kg / m^-3
     gd = initial_g_dist(R, rm, Lc)
+    lA = np.array([0,0,0], dtype=np.float)
+    mc = np.array(list(map(droplet_mass, R)))
     
     f, ax = plt.subplots(1, 2, figsize=(12, 6))
     
@@ -609,6 +623,7 @@ if test_collision and __name__ == '__main__':
     maxi = np.argmax(gd)
     ax[0].text((R * 1e6)[maxi], (gd * 1e3)[maxi], '0')
     ax[1].text((R * 1e6)[maxi], (gd * 1e3)[maxi], '0')
+    lA[0] = np.trapz(mc * conv_g_to_sd(gd,R), R) * 1e3
     
     
     # +30 min distribution
@@ -618,6 +633,7 @@ if test_collision and __name__ == '__main__':
     maxi = np.argmax(gd)
     ax[0].text((R * 1e6)[maxi], (gd * 1e3)[maxi], '30')
     ax[1].text((R * 1e6)[maxi], (gd * 1e3)[maxi], '30')
+    lA[1] = np.trapz(mc * conv_g_to_sd(gd,R), R) * 1e3
     
     # +60 min distribution
     gd = run_collision_sim(gd, R, 1800, 1.0)
@@ -626,7 +642,7 @@ if test_collision and __name__ == '__main__':
     maxi = np.argmax(gd)
     ax[0].text((R * 1e6)[maxi], (gd * 1e3)[maxi], '60')
     ax[1].text((R * 1e6)[maxi], (gd * 1e3)[maxi], '60')
-    
+    lA[2] = np.trapz(mc * conv_g_to_sd(gd,R), R) * 1e3
     
     
     ax[0].set_xlabel("r ($\\mu$m)")
@@ -643,6 +659,8 @@ if test_collision and __name__ == '__main__':
     ax[1].set_ylim(1e-10, 5)
     f.savefig("./water_droplet_dist_growth.png", dpi=300)
     plt.show()
+    
+    print(lA)
 
 if test_condensation and __name__ == '__main__':
     def satmix_r(T,p):
@@ -650,14 +668,14 @@ if test_condensation and __name__ == '__main__':
         return es / p * Rair / Rv
     
     # Create Initial vapour distribution
-    R = prdist(80, 0.5, 2.0, mode='massmult')
+    R = prdist(69, 0.25, 0.055, mode='linexp')
     rm = 1e-5 # In metres
     Lc = 1e-3 # Cloud liquid content in kg / m^-3
     ql = 0.020 # Water Vapour in the cloud
     T,p = (295.0, 1e5) # Environmental Temperature and pressure
-    dt = 0.5
-    nt = 20
-    centered = True
+    dt = 0.01
+    nt = 1000
+    centered = False
     
     ql = np.full(nt * 2, ql)
     mcr = np.array(list(map(droplet_mass, R)))
@@ -695,10 +713,15 @@ if test_condensation and __name__ == '__main__':
             
             dr_dt = vent_c * 1e-10 * (ql[i-1] / satmix_r(T,p) - 1.0) / R
             courn = dr_dt * dt / dr
+            if i == 1:
+                print("S", ql[i-1] / satmix_r(T,p) - 1.0)
+                print("C", courn)
             
             sd[i] = adv2p(np.copy(sd[i-1]), courn)
             cond_t = (sd[i] - sd[i-1]) / dt
             Cr = np.trapz(mcr * cond_t, R)
+            if i == 1:
+                print(Cr)
             ql[i] = ql[i-1] - Cr * dt 
     
     f,ax = plt.subplots()

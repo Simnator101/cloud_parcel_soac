@@ -213,6 +213,41 @@ class Sounding(object):
         self.__q = qhum 
         self.wyoming_info = WyomingSoundingInfo()
         
+    def from_coords(self, data_d, press_coords=False):
+        assert 'T' in data_d
+        self.__T = np.array(data_d['T'])
+        if press_coords:
+            assert 'p' in data_d
+            self.__p = np.array(data_d['p'])
+            self.__z = np.zeros(self.__p.shape)
+            for i in range( self.__p.size - 1):
+                dp = self.__p[i+1] - self.__p[i]
+                self.__z[i+1] = self.__z[i] - Rair / gval * dp / self.__p[i] * self.__T[i]
+        else:
+            assert 'z' in data_d
+            self.__z = np.array(data_d['z'])
+            self.__p = self.pressure_profile()
+            
+        # Specific Humidity
+        self.__q = np.zeros(len(self.__z))
+        self.__Td = np.zeros(len(self.__z))
+        if 'q' in data_d:
+            self.__q = np.array(data_d['q'])
+            RH = map(lambda v : relative_humidity(*v),
+                     zip(self.__q, self.__p, self.__T))
+            self.__Td = map(lambda v : self.dew_point_NOAA(*v),
+                             zip(self.__T, list(RH)))
+            self.__Td = np.array(list(self.__Td))
+        elif 'Td' in data_d:
+            self.__Td = np.array(data_d['Td'])
+            self.__q = map(lambda v : saturation_mixr(*v),
+                           zip(self.__Td, self.__p))
+            self.__q = np.array(list(self.__q))
+        self.wyoming_info = WyomingSoundingInfo()
+        assert len(self.__T) == len(self.__p)
+        
+            
+        
     def from_lapse_rate(self, g_rate, zb, zt, nsamps, T0=300.0, Td0=280.0, q_f=lambda z: 1e-6):
         assert isinstance(g_rate(0.0), dict)
         self.__z = np.linspace(zb, zt, nsamps)
@@ -571,7 +606,10 @@ class Sounding(object):
                    (when.year, when.month, when.day, utc_val, when.day, utc_val)
         
         # Parse Station Id
-        station_str = "STNM=%i" % station_id
+        if isinstance(station_id, (int, np.int)):
+            station_str = "STNM=%05i" % station_id
+        else:
+            station_str = "STNM=%s" % station_id
         
         # HTTPD Request
         url = None
@@ -641,6 +679,11 @@ class Sounding(object):
             return 0.0
         g = np.log(RH / 100.0 * ps)
         return c * g / (b - g) + 273.15
+    
+    @property
+    def density(self):
+        rhod = self.__p / Rair / self.__T
+        return rhod * (1. + self.__q)       
             
     @property
     def temperature(self):
@@ -800,6 +843,7 @@ class Sounding(object):
         ax.set_xlim(220, 320)
         ax.set_xlabel("Temperature (K)")
         ax.set_ylabel("Pressure (hPa)")
+        
             
         if show:
             plt.show()
@@ -834,3 +878,18 @@ if __name__ == "__main__":
     # Grab North American Sounding over Florida Key West from 1 Oct 2019 00 UTC
     snd.from_wyoming_httpd(SoundingRegion.NORTH_AMERICA, 72201, "01102019")
     f, ax = snd.SkewT_logP(save_file='./KEY_01102019_sounding.png')
+    
+    ptest = np.array([1014, 1010, 1000, 990, 975, 960, 950, 925, 900, 875, 850,
+                      825, 800, 790, 775, 765, 755, 745, 730, 715, 700, 640,
+                      600, 500],
+            dtype=np.float) * 1e2
+    Ttest = np.array([25.2, 24.8, 23.6, 22.5, 21.8, 20.5, 19.9, 18.2, 16.8,
+                      14.8, 13.3, 11.9, 11.0, 11.3, 10.9, 11.2, 10.2, 11.0,
+                      11.2, 10.0, 8.8, 6.8, 2.8, -3.2]) + 273.15
+    qtest = np.array([14.5, 14.5, 14.5, 14.0, 13.7, 13.9, 13.9, 10.3, 10.3,
+                      10.0, 9.9, 8.9, 7.9, 4.0, 2.3, 1.2, 1.2, 0.9, 0.6, 2.0,
+                      1.6, 0.5, 1.5, 0.5]) * 1e-3
+                      
+    snd.from_coords({'p' : ptest, 'T' : Ttest, 'q' : qtest}, press_coords=True)
+    f, ax = snd.SkewT_logP()
+    f.savefig("./images/shallow_sounding.pdf")    
